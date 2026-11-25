@@ -55,6 +55,9 @@ class TradingRadarFailureContractTests(unittest.TestCase):
                     radar._gemini_tokenzahl = lambda *a, **k: 100
                     radar.GEMINI_MODELLREIHENFOLGE = ("gemini-test-model",)
                     radar.GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN = 1
+                    radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+                    radar.GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 0
+                    radar.time.sleep = lambda *_: None
 
                     def fail_send(*args, **kwargs):
                         calls.append((args, kwargs))
@@ -72,7 +75,11 @@ class TradingRadarFailureContractTests(unittest.TestCase):
                     self.assertIsNone(result)
                     self.assertIsNone(radar._GEMINI_TRADING_RADAR_TEXT)
                     self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "REQUEST_FEHLER")
-                    self.assertEqual(len(calls), 1, "ein Fehler darf keine unprotokollierte Doppel-Auswertung erzeugen")
+                    expected_calls = 2 if "503" in api_error else 1
+                    self.assertEqual(
+                        len(calls), expected_calls,
+                        "nur transiente 503-Fehler duerfen einen begrenzten zweiten Versuch ausloesen",
+                    )
                     self.assertTrue(any(action == "write" for action, _ in status_writes))
                     self.assertTrue(Path("Trading_Radar_Fehler.log").is_file())
                 finally:
@@ -452,6 +459,320 @@ class TradingRadarFailureContractTests(unittest.TestCase):
             ("other", None),
         )
 
+    def test_standalone_radar_second_pass_recovers_after_full_pool_503(self):
+        """Zweite Runde versucht nur 503-Modelle; CountTokens-404 bleibt ausgeschlossen."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            radar = load_radar_module()
+            old_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b", "model-c")
+                radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 3
+                radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 300
+                radar.GEMINI_503_POOL_BACKOFF_SECONDS = 60
+                sleeps = []
+                radar.time.sleep = lambda seconds: sleeps.append(seconds)
+                radar._gemini_503_failed_models_by_request.clear()
+                radar._gemini_503_failures_this_run.clear()
+                radar._offene_positionen_quellblock = lambda path: "OFFENE POSITIONEN TEST"
+                radar.lade_offenen_positionen_check_tab2 = lambda: "TAB-2 TESTDATEN"
+                token_calls = []
+
+                def fake_token_count(client, model, contents, system_instruction=None, label=""):
+                    token_calls.append(model)
+                    if model == "model-a":
+                        raise RuntimeError(
+                            "404 NOT_FOUND: models/model-a is not found for API version v1, "
+                            "or is not supported for countTokens"
+                        )
+                    return 100
+
+                radar._gemini_tokenzahl = fake_token_count
+                calls = []
+                report = "\n".join((
+                    "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
+                    "4. Assetklassenvergleich", "5. Technische Kandidaten",
+                    "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang",
+                ))
+
+                class FakeModels:
+                    def generate_content(self, model, contents, config):
+                        calls.append(model)
+                        if model == "model-b" and calls.count("model-b") == 1:
+                            raise RuntimeError("503 UNAVAILABLE: high demand")
+                        if model == "model-c":
+                            raise RuntimeError("503 UNAVAILABLE: high demand")
+                        return types.SimpleNamespace(text=report)
+
+                client = types.SimpleNamespace(models=FakeModels())
+                radar.types = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+                radar._gemini_quota_waehlen = lambda preferred, tokens, **kwargs: (preferred, 0.0)
+                radar._gemini_quota_registriere_sendung = lambda model, tokens: (model, tokens)
+                radar._gemini_quota_rollback_sendung = lambda reservation: None
+
+                with redirect_stdout(StringIO()) as output:
+                    result = radar._gemini_trading_radar_eigenstaendig(
+                        client=client, preferred_modell="model-a",
+                        eingabedateien={}, bestehende_auswertung="",
+                    )
+
+                self.assertEqual(calls, ["model-b", "model-c", "model-b"])
+                self.assertEqual(token_calls, ["model-a", "model-b", "model-c", "model-b"])
+                self.assertEqual(sleeps, [60, 300])
+                attempt_counts = {
+                    model: count
+                    for (_fingerprint, model), count in radar._gemini_503_failures_this_run.items()
+                }
+                self.assertEqual(attempt_counts, {"model-b": 2, "model-c": 1})
+                self.assertLessEqual(max(attempt_counts.values()), radar.GEMINI_MAX_503_ATTEMPTS_PER_REQUEST_PER_RUN)
+                self.assertEqual(result, report)
+                self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "EIGENSTAENDIG_ERZEUGT")
+                self.assertIn("TRADING_RADAR_RETRY_SECOND_PASS_START", output.getvalue())
+                self.assertIn("Modelle=model-b,model-c", output.getvalue())
+                self.assertNotIn("model-a", output.getvalue().split("TRADING_RADAR_RETRY_SECOND_PASS_START", 1)[-1])
+            finally:
+                os.chdir(old_cwd)
+
+    def test_standalone_radar_second_pass_skips_model_rpm_quota_and_continues(self):
+        """Ein bekanntes RPM-429 in Runde 2 darf den naechsten Retry-Kandidaten nicht blockieren."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            radar = load_radar_module()
+            old_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+                radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 0
+                radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
+                radar.time.sleep = lambda *_: None
+                radar._gemini_503_failed_models_by_request.clear()
+                radar._gemini_503_failures_this_run.clear()
+                radar._offene_positionen_quellblock = lambda path: "OFFENE POSITIONEN TEST"
+                radar.lade_offenen_positionen_check_tab2 = lambda: "TAB-2 TESTDATEN"
+                radar._gemini_tokenzahl = lambda *a, **k: 100
+                calls = []
+                report = "\n".join((
+                    "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
+                    "4. Assetklassenvergleich", "5. Technische Kandidaten",
+                    "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang",
+                ))
+                rpm_error = (
+                    "429 RESOURCE_EXHAUSTED: quotaId="
+                    "'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' "
+                    "requests per minute quota exceeded"
+                )
+
+                class FakeModels:
+                    def generate_content(self, model, contents, config):
+                        calls.append(model)
+                        if calls.count(model) == 1:
+                            raise RuntimeError("503 UNAVAILABLE: high demand")
+                        if model == "model-a":
+                            raise RuntimeError(rpm_error)
+                        return types.SimpleNamespace(text=report)
+
+                client = types.SimpleNamespace(models=FakeModels())
+                radar.types = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+                radar._gemini_quota_waehlen = lambda preferred, tokens, **kwargs: (preferred, 0.0)
+                radar._gemini_quota_registriere_sendung = lambda model, tokens: (model, tokens)
+                radar._gemini_quota_rollback_sendung = lambda reservation: None
+
+                with redirect_stdout(StringIO()) as output:
+                    result = radar._gemini_trading_radar_eigenstaendig(
+                        client=client, preferred_modell="model-a",
+                        eingabedateien={}, bestehende_auswertung="",
+                    )
+
+                self.assertEqual(calls, ["model-a", "model-b", "model-a", "model-b"])
+                attempt_counts = {
+                    model: count
+                    for (_fingerprint, model), count in radar._gemini_503_failures_this_run.items()
+                }
+                self.assertEqual(attempt_counts, {"model-a": 2, "model-b": 2})
+                self.assertEqual(result, report)
+                self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "EIGENSTAENDIG_ERZEUGT")
+                self.assertIn("bekanntes RPM-Quota; Modell uebersprungen", output.getvalue())
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_standalone_radar_second_pass_skips_counttokens_404_and_continues(self):
+        """Ein CountTokens-404 in Runde 2 ueberspringt nur dieses Modell."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            radar = load_radar_module()
+            old_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+                radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 0
+                radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
+                radar.time.sleep = lambda *_: None
+                radar._gemini_503_failed_models_by_request.clear()
+                radar._gemini_503_failures_this_run.clear()
+                radar._offene_positionen_quellblock = lambda path: "OFFENE POSITIONEN TEST"
+                radar.lade_offenen_positionen_check_tab2 = lambda: "TAB-2 TESTDATEN"
+                token_calls = []
+
+                def fake_token_count(client, model, contents, system_instruction=None, label=""):
+                    token_calls.append(model)
+                    if model == "model-a" and token_calls.count("model-a") == 2:
+                        raise RuntimeError(
+                            "404 NOT_FOUND: models/model-a is not found for API version v1, "
+                            "or is not supported for countTokens"
+                        )
+                    return 100
+
+                radar._gemini_tokenzahl = fake_token_count
+                calls = []
+                report = "\n".join((
+                    "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
+                    "4. Assetklassenvergleich", "5. Technische Kandidaten",
+                    "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang",
+                ))
+
+                class FakeModels:
+                    def generate_content(self, model, contents, config):
+                        calls.append(model)
+                        if calls.count(model) == 1:
+                            raise RuntimeError("503 UNAVAILABLE: high demand")
+                        return types.SimpleNamespace(text=report)
+
+                client = types.SimpleNamespace(models=FakeModels())
+                radar.types = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+                radar._gemini_quota_waehlen = lambda preferred, tokens, **kwargs: (preferred, 0.0)
+                radar._gemini_quota_registriere_sendung = lambda model, tokens: (model, tokens)
+                radar._gemini_quota_rollback_sendung = lambda reservation: None
+
+                with redirect_stdout(StringIO()):
+                    result = radar._gemini_trading_radar_eigenstaendig(
+                        client=client, preferred_modell="model-a",
+                        eingabedateien={}, bestehende_auswertung="",
+                    )
+
+                self.assertEqual(calls, ["model-a", "model-b", "model-b"])
+                self.assertEqual(token_calls, ["model-a", "model-b", "model-a", "model-b"])
+                self.assertEqual(result, report)
+                self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "EIGENSTAENDIG_ERZEUGT")
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_standalone_radar_second_pass_skips_counttokens_rpm_quota_and_continues(self):
+        """Ein bekanntes RPM-429 in CountTokens der zweiten Runde blockiert nicht den Pool."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            radar = load_radar_module()
+            old_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+                radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 0
+                radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
+                radar.time.sleep = lambda *_: None
+                radar._gemini_503_failed_models_by_request.clear()
+                radar._gemini_503_failures_this_run.clear()
+                radar._offene_positionen_quellblock = lambda path: "OFFENE POSITIONEN TEST"
+                radar.lade_offenen_positionen_check_tab2 = lambda: "TAB-2 TESTDATEN"
+                token_calls = []
+                rpm_error = (
+                    "429 RESOURCE_EXHAUSTED: quotaId="
+                    "'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' "
+                    "requests per minute quota exceeded"
+                )
+
+                def fake_token_count(client, model, contents, system_instruction=None, label=""):
+                    token_calls.append(model)
+                    if model == "model-a" and token_calls.count("model-a") == 2:
+                        raise RuntimeError(rpm_error)
+                    return 100
+
+                radar._gemini_tokenzahl = fake_token_count
+                calls = []
+                report = "\n".join((
+                    "1. Trading-Radar", "2. Thesen-Update", "3. Ereignisradar",
+                    "4. Assetklassenvergleich", "5. Technische Kandidaten",
+                    "6. Portfolio & Risiko", "7. MSCI-Vergleich", "8. Daten-/Prüfanhang",
+                ))
+
+                class FakeModels:
+                    def generate_content(self, model, contents, config):
+                        calls.append(model)
+                        if calls.count(model) == 1:
+                            raise RuntimeError("503 UNAVAILABLE: high demand")
+                        return types.SimpleNamespace(text=report)
+
+                client = types.SimpleNamespace(models=FakeModels())
+                radar.types = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+                radar._gemini_quota_waehlen = lambda preferred, tokens, **kwargs: (preferred, 0.0)
+                radar._gemini_quota_registriere_sendung = lambda model, tokens: (model, tokens)
+                radar._gemini_quota_rollback_sendung = lambda reservation: None
+
+                with redirect_stdout(StringIO()):
+                    result = radar._gemini_trading_radar_eigenstaendig(
+                        client=client, preferred_modell="model-a",
+                        eingabedateien={}, bestehende_auswertung="",
+                    )
+
+                self.assertEqual(calls, ["model-a", "model-b", "model-b"])
+                self.assertEqual(token_calls, ["model-a", "model-b", "model-a", "model-b"])
+                self.assertEqual(result, report)
+                self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "EIGENSTAENDIG_ERZEUGT")
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_standalone_radar_does_not_second_pass_after_hard_permission_error(self):
+        """Ein harter 403 nach vorherigem 503 beendet den Lauf ohne zweite Runde."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            radar = load_radar_module()
+            old_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                radar._offene_positionen_quellblock = lambda path: "OFFENE POSITIONEN TEST"
+                radar.lade_offenen_positionen_check_tab2 = lambda: "TAB-2 TESTDATEN"
+                radar._gemini_tokenzahl = lambda *a, **k: 100
+                radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
+                radar.GEMINI_RADAR_503_MAX_MODEL_ATTEMPTS_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
+                radar.GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 0
+                radar.time.sleep = lambda *_: None
+                radar._gemini_503_failed_models_by_request.clear()
+                radar._gemini_503_failures_this_run.clear()
+                radar._gemini_503_pool_passes_this_run.clear()
+                calls = []
+
+                class FakeModels:
+                    def generate_content(self, model, contents, config):
+                        calls.append(model)
+                        if model == "model-a":
+                            raise RuntimeError("503 UNAVAILABLE: high demand")
+                        raise RuntimeError("403 PERMISSION_DENIED: API key not valid")
+
+                client = types.SimpleNamespace(models=FakeModels())
+                radar.types = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+                radar._gemini_quota_waehlen = lambda preferred, tokens, **kwargs: (preferred, 0.0)
+                radar._gemini_quota_registriere_sendung = lambda model, tokens: (model, tokens)
+                radar._gemini_quota_rollback_sendung = lambda reservation: None
+
+                with redirect_stdout(StringIO()):
+                    result = radar._gemini_trading_radar_eigenstaendig(
+                        client=client, preferred_modell="model-a",
+                        eingabedateien={}, bestehende_auswertung="",
+                    )
+
+                self.assertEqual(calls, ["model-a", "model-b"])
+                self.assertIsNone(result)
+                self.assertIsNone(radar._GEMINI_TRADING_RADAR_TEXT)
+                self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "REQUEST_FEHLER")
+            finally:
+                os.chdir(old_cwd)
+
     def test_standalone_radar_all_models_503_ends_in_terminal_error_state(self):
         """Integration: erschoepfter Modellpool bleibt Fehler, publiziert keinen Bericht."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -483,7 +804,12 @@ class TradingRadarFailureContractTests(unittest.TestCase):
                         client=client, preferred_modell="model-a",
                         eingabedateien={}, bestehende_auswertung="",
                     )
-                self.assertEqual(calls, ["model-a", "model-b"])
+                self.assertEqual(calls, ["model-a", "model-b", "model-a", "model-b"])
+                attempt_counts = {
+                    model: count
+                    for (_fingerprint, model), count in radar._gemini_503_failures_this_run.items()
+                }
+                self.assertEqual(attempt_counts, {"model-a": 2, "model-b": 2})
                 self.assertIsNone(result)
                 self.assertIsNone(radar._GEMINI_TRADING_RADAR_TEXT)
                 self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "REQUEST_FEHLER")

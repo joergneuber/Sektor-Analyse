@@ -661,6 +661,8 @@ class TradingRadarFailureChainIntegrationTests(unittest.TestCase):
                 radar._gemini_tokenzahl = lambda *a, **k: 100
                 radar.GEMINI_MODELLREIHENFOLGE = ("model-a", "model-b")
                 radar.GEMINI_MAX_503_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_MAX_POOL_PASSES_PER_REQUEST_PER_RUN = 2
+                radar.GEMINI_RADAR_503_SECOND_PASS_BACKOFF_SECONDS = 0
                 radar.GEMINI_503_POOL_BACKOFF_SECONDS = 0
                 radar.time.sleep = lambda *_: None
                 radar._gemini_503_failed_models_by_request.clear()
@@ -682,7 +684,10 @@ class TradingRadarFailureChainIntegrationTests(unittest.TestCase):
                     )
 
                 self.assertIsNone(result)
-                self.assertEqual(calls, ["model-a", "model-b"], "Modellwechsel muss im selben Lauf belegt sein")
+                self.assertEqual(
+                    calls, ["model-a", "model-b", "model-a", "model-b"],
+                    "beide Modelle muessen nach der ersten Poolrunde genau einmal erneut versucht werden",
+                )
                 self.assertEqual(radar._GEMINI_TRADING_RADAR_STATUS, "REQUEST_FEHLER")
                 status_files = list(work.glob("Gemini_Fallback_Status_*.txt"))
                 self.assertEqual(len(status_files), 1, "genau ein aktueller Statusmarker")
