@@ -2470,7 +2470,10 @@ def get_benchmark_close():
 def get_eu_benchmark_close():
     """Lädt die rohen Schlusskurse von EXSA.DE aus dem gemeinsamen Cache."""
     try:
-        hist = get_yf_history(eu_benchmark_ticker)
+        hist = get_yf_history(
+            eu_benchmark_ticker, instrument_type="ETF",
+            instrument_name="iShares STOXX Europe 600 UCITS ETF",
+        )
         if hist.empty:
             print("DEBUG: EU-Benchmark (EXSA.DE) leer, Relative Stärke EU wird übersprungen.")
             return None
@@ -2490,7 +2493,9 @@ def get_perf_yf(ticker, name):
     """yfinance-Äquivalent zu get_perf() für die STOXX-Europe-600-Sektor-ETFs,
     da diese nicht über Alpaca verfügbar sind. Gleiche Kennzahlen/Formel wie US-Version."""
     try:
-        hist = get_yf_history(ticker)
+        hist = get_yf_history(
+            ticker, instrument_type="ETF", instrument_name=name
+        )
         if not hist.empty:
             stichtag = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=365))
             if getattr(hist.index, 'tz', None) is not None:
@@ -2622,6 +2627,8 @@ def get_perf(ticker, name):
             gap_registry_path=DEFAULT_GAP_REGISTRY,
             window_sessions=252,
             preserve_expected_sessions=True,
+            instrument_type="ETF",
+            instrument_name=name,
         )
         return gated, quality
 
@@ -2672,7 +2679,9 @@ def get_perf(ticker, name):
     # 2. Ersatzquelle: direkter Yahoo-Finance-Abruf, nicht der persistente
     # Projekt-/SQLite-Kursbestand. Auch diese Rohdaten durchlaufen dasselbe Gate.
     try:
-        yahoo_hist = get_yf_history_from_yahoo(ticker)
+        yahoo_hist = get_yf_history_from_yahoo(
+            ticker, instrument_type="ETF", instrument_name=name
+        )
         yahoo_quality = (
             yahoo_hist.attrs.get("ohlcv_quality")
             if isinstance(yahoo_hist, pd.DataFrame) else None

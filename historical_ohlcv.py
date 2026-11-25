@@ -40,6 +40,7 @@ DEFAULT_DB = Path(os.environ.get("NMM_HISTORICAL_OHLCV_DB", "historical_ohlcv.sq
 DEFAULT_SOURCE_FILE = Path(os.environ.get("NMM_HISTORICAL_OHLCV_SOURCE", "analyse.py"))
 DEFAULT_DYNAMIC_UNIVERSE = Path(os.environ.get("NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE", "historical_ohlcv_universe.json"))
 DEFAULT_OPEN_POSITIONS_FILE = Path(os.environ.get("NMM_OPEN_POSITIONS_FILE", "Offene_Positionen.csv"))
+ETF_ETC_FRESHNESS_GRACE_HOURS = 48
 SCHEMA_VERSION = 1
 BATCH_SIZE = int(os.environ.get("NMM_HISTORICAL_OHLCV_BATCH_SIZE", "40"))
 REQUEST_PAUSE_SECONDS = float(os.environ.get("NMM_HISTORICAL_OHLCV_PAUSE", "1.0"))
@@ -543,6 +544,99 @@ def load_open_position_tickers(positions_file: Path = DEFAULT_OPEN_POSITIONS_FIL
             )
         tickers.add(ticker)
     return sorted(tickers)
+
+
+def _load_open_position_metadata(
+    positions_file: Path = DEFAULT_OPEN_POSITIONS_FILE,
+) -> dict[str, tuple[str, str]]:
+    """Liefert Produkt_Typ und Name fuer offene Positionen, ohne Ticker zu erraten."""
+    positions_file = Path(positions_file)
+    if not positions_file.exists():
+        raise FileNotFoundError(f"Offene-Positionen-Datei fehlt: {positions_file}")
+    frame = pd.read_csv(
+        positions_file, sep=";", dtype=str, encoding="utf-8-sig",
+        keep_default_na=False,
+    )
+    frame.columns = [str(column).strip() for column in frame.columns]
+    if not {"Status", "Ticker"}.issubset(frame.columns):
+        raise ValueError("Offene_Positionen.csv benoetigt die Spalten 'Status' und 'Ticker'.")
+    open_rows = frame[frame["Status"].astype(str).str.strip().str.lower() == "offen"]
+    metadata: dict[str, tuple[str, str]] = {}
+    for _, row in open_rows.iterrows():
+        ticker = _normalize_market_ticker(row.get("Ticker", ""))
+        if not ticker or ticker == "ANLEITUNG":
+            continue
+        metadata[ticker] = (
+            str(row.get("Produkt_Typ", "") or "").strip(),
+            str(row.get("Name", "") or "").strip(),
+        )
+    return metadata
+
+
+def _is_etf_or_etc(instrument_type=None, instrument_name=None) -> bool:
+    """Klassifiziert ETFs/ETCs anhand expliziter Positionsmetadaten."""
+    explicit = re.sub(r"[^A-Z]", "", str(instrument_type or "").upper())
+    if explicit in {"NA", "NAN", "NONE", "NICHTVERFUEGBAR", "NICHTVERFUGBAR"}:
+        explicit = ""
+    if explicit:
+        return (
+            explicit in {
+                "ETF", "ETC", "EXCHANGETRADEDFUND", "EXCHANGETRADEDCOMMODITY",
+            }
+            or explicit.startswith(("ETF", "ETC"))
+        )
+    return bool(re.search(
+        r"(?i)\b(?:ETF|ETC)\b|exchange[- ]traded\s+(?:fund|commodity)",
+        str(instrument_name or ""),
+    ))
+
+
+def _etf_etc_freshness_grace_is_active(
+    ticker: str,
+    actual_latest,
+    expected_latest,
+    *,
+    as_of=None,
+) -> bool:
+    """Erlaubt genau die unmittelbar vorherige Börsensitzung bis 48h nach Schluss.
+
+    Die Funktion lockert weder Kerzenvalidierung noch interne Lücken. Unbekannte
+    Kalender, 24/5-/24/7-Sonderkalender und nicht auflösbare Schlusszeiten
+    bleiben fail-closed.
+    """
+    try:
+        symbol = str(ticker or "").strip().upper()
+        calendar_name = _calendar_name_for_ticker(symbol)
+        if not calendar_name or calendar_name in {"24/5", "24/7", "IFEU"}:
+            return False
+
+        expected_date = pd.Timestamp(expected_latest).date().isoformat()
+        actual_date = pd.Timestamp(actual_latest).date().isoformat()
+        start_date = (
+            pd.Timestamp(expected_date) - pd.Timedelta(days=20)
+        ).date().isoformat()
+        sessions = _calendar_session_dates(calendar_name, start_date, expected_date)
+        if not sessions or sessions[-1] != expected_date or len(sessions) < 2:
+            return False
+        if actual_date != sessions[-2]:
+            return False
+
+        import exchange_calendars as exchange_cal
+        calendar = exchange_cal.get_calendar(calendar_name)
+        close = pd.Timestamp(calendar.session_close(pd.Timestamp(expected_date)))
+        if close.tzinfo is None:
+            close = close.tz_localize("UTC")
+        else:
+            close = close.tz_convert("UTC")
+
+        now = pd.Timestamp.now(tz="UTC") if as_of is None else pd.Timestamp(as_of)
+        if now.tzinfo is None:
+            now = now.tz_localize("UTC")
+        else:
+            now = now.tz_convert("UTC")
+        return now <= close + pd.Timedelta(hours=ETF_ETC_FRESHNESS_GRACE_HOURS)
+    except Exception:
+        return False
 
 
 def _ensure_instrument_placeholders(
@@ -1237,9 +1331,16 @@ def verify_open_positions(
     positions_file: Path = DEFAULT_OPEN_POSITIONS_FILE,
     *,
     min_rows: int = 60,
+    as_of=None,
 ) -> dict:
-    """Prueft nach dem Provider-Fallback jede offene Position auf aktuelle, freigegebene Historie."""
+    """Prueft offene Positionen auf freigegebene Historie und aktuelle Kurse.
+
+    ETFs/ETCs duerfen genau die unmittelbar vorherige erwartete Boersensitzung
+    bis 48 Stunden nach dem offiziellen Schluss der letzten erwarteten Session
+    verwenden. Die strukturellen Quality-Gates bleiben unveraendert streng.
+    """
     tickers = load_open_position_tickers(positions_file)
+    metadata = _load_open_position_metadata(positions_file)
     failures: dict[str, list[str]] = {}
     results: dict[str, dict] = {}
     if not tickers:
@@ -1249,6 +1350,7 @@ def verify_open_positions(
     from ohlcv_quality_gate import _last_completed_session_date
     for ticker in tickers:
         reasons: list[str] = []
+        freshness_grace_applied = False
         frame = load_history(ticker, db_path)
         if frame.empty:
             reasons.append("NO_STORED_BARS")
@@ -1267,22 +1369,43 @@ def verify_open_positions(
             if quality.get("last_3_bars_valid") is not True:
                 reasons.append("LAST_3_BARS_NOT_VALID")
             try:
-                expected = _last_completed_session_date(ticker)
+                expected = (
+                    _last_completed_session_date(ticker)
+                    if as_of is None
+                    else _last_completed_session_date(ticker, as_of=as_of)
+                )
             except Exception as exc:
                 expected = None
                 reasons.append(f"EXPECTED_SESSION_ERROR:{type(exc).__name__}")
             if expected is None:
                 if not any(reason.startswith("EXPECTED_SESSION_ERROR:") for reason in reasons):
                     reasons.append("EXPECTED_SESSION_UNAVAILABLE")
-            elif pd.Timestamp(frame.index.max()).date() < pd.Timestamp(expected).date():
-                reasons.append(
-                    f"STALE_HISTORY:{pd.Timestamp(frame.index.max()).date().isoformat()}"
-                    f"<{pd.Timestamp(expected).date().isoformat()}"
-                )
+            else:
+                actual_latest = pd.Timestamp(frame.index.max()).date()
+                expected_date = pd.Timestamp(expected).date()
+                if actual_latest < expected_date:
+                    instrument_type, instrument_name = metadata.get(ticker, ("", ""))
+                    if (
+                        _is_etf_or_etc(instrument_type, instrument_name)
+                        and _etf_etc_freshness_grace_is_active(
+                            ticker, actual_latest, expected_date, as_of=as_of
+                        )
+                    ):
+                        freshness_grace_applied = True
+                        print(
+                            f"INFO-HIST-OHLCV-FRESHNESS: {ticker}: ETF/ETC-Kurs "
+                            "innerhalb der zusaetzlichen 48h-Gueltigkeit akzeptiert."
+                        )
+                    else:
+                        reasons.append(
+                            f"STALE_HISTORY:{actual_latest.isoformat()}"
+                            f"<{expected_date.isoformat()}"
+                        )
         results[ticker] = {
             "rows": int(len(frame)),
             "last_date": None if frame.empty else pd.Timestamp(frame.index.max()).date().isoformat(),
             "quality_status": str(quality.get("quality_status") or "UNKNOWN"),
+            "freshness_grace_applied": freshness_grace_applied,
             "reasons": reasons,
         }
         if reasons:
@@ -1766,7 +1889,7 @@ def load_history(ticker: str, db_path: Path = DEFAULT_DB) -> pd.DataFrame:
             "ticker": str(ticker).strip().upper(),
             "quality_status": "INCOMPLETE",
             "reason_codes": [f"QUALITY_GATE_ERROR:{type(exc).__name__}"],
-            "rule_version": "1.3",
+            "rule_version": "1.4",
         }
     return frame
 

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-RULE_VERSION = "1.3"
+RULE_VERSION = "1.4"
 _MODULE_DIR = Path(__file__).resolve().parent
 DEFAULT_REGISTRY = Path(os.environ.get(
     "NMM_OHLCV_QUALITY_REGISTRY", str(_MODULE_DIR / "ohlcv_quality_registry.csv")
@@ -392,6 +392,67 @@ def _structural_reasons(
     return sorted(set(reasons))
 
 
+def _resolve_instrument_metadata(
+    ticker: str,
+    frame: pd.DataFrame,
+    instrument_type=None,
+    instrument_name=None,
+) -> tuple[str, str]:
+    """Resolve ETF/ETC metadata without guessing from ticker symbols.
+
+    Explicit call arguments and DataFrame attrs take precedence. As a shared
+    fallback, open-position master data is read from Offene_Positionen.csv.
+    Missing or malformed metadata fails closed (no freshness exception).
+    """
+    attrs = getattr(frame, "attrs", {}) if isinstance(frame, pd.DataFrame) else {}
+    resolved_type = str(
+        instrument_type or attrs.get("ohlcv_instrument_type") or ""
+    ).strip()
+    resolved_name = str(
+        instrument_name or attrs.get("ohlcv_instrument_name") or ""
+    ).strip()
+    if resolved_type or resolved_name:
+        return resolved_type, resolved_name
+    try:
+        import historical_ohlcv as ho
+        metadata = ho._load_open_position_metadata()
+        values = metadata.get(str(ticker or "").strip().upper(), ("", ""))
+        return str(values[0] or "").strip(), str(values[1] or "").strip()
+    except Exception:
+        return "", ""
+
+
+def _etf_etc_latest_session_grace(
+    ticker: str,
+    frame: pd.DataFrame,
+    sessions: list[str],
+    *,
+    instrument_type=None,
+    instrument_name=None,
+    as_of=None,
+) -> bool:
+    """True only for one missing latest exchange session within the 48h grace."""
+    if len(sessions) < 2 or frame is None or frame.empty:
+        return False
+    try:
+        import historical_ohlcv as ho
+        resolved_type, resolved_name = _resolve_instrument_metadata(
+            ticker, frame, instrument_type, instrument_name
+        )
+        if not ho._is_etf_or_etc(resolved_type, resolved_name):
+            return False
+        actual_latest = pd.Timestamp(frame.index.max()).date().isoformat()
+        expected_latest = str(sessions[-1])[:10]
+        return bool(
+            actual_latest == str(sessions[-2])[:10]
+            and ho._etf_etc_freshness_grace_is_active(
+                ticker, actual_latest, expected_latest, as_of=as_of
+            )
+        )
+    except Exception:
+        return False
+
+
 def apply_ohlcv_quality_gate(
     frame: pd.DataFrame,
     ticker: str,
@@ -404,6 +465,8 @@ def apply_ohlcv_quality_gate(
     full_history: bool = False,
     as_of=None,
     timeframe: str = "1d",
+    instrument_type=None,
+    instrument_name=None,
 ) -> tuple[pd.DataFrame, QualityGateResult]:
     """Prüft OHLCV-Daten gegen Kalender, Registry und konservative Grenzen."""
     ticker_key = str(ticker or "").strip().upper()
@@ -586,16 +649,37 @@ def apply_ohlcv_quality_gate(
 
     requested_window = max(1, int(window_sessions))
     minimum_window_sessions = max(1, math.ceil(requested_window * 0.95))
+    # ETF/ETC freshness grace: only the immediately preceding exchange
+    # session may stand in for the latest completed session, and only until
+    # 48h after the expected session close. The missing trailing session is
+    # omitted from the returned index; no internal historical gap is removed.
+    freshness_grace_applied = _etf_etc_latest_session_grace(
+        ticker_key, out, sessions,
+        instrument_type=instrument_type,
+        instrument_name=instrument_name,
+        as_of=as_of,
+    )
+    quality_sessions = sessions[:-1] if freshness_grace_applied else sessions
+    if not quality_sessions:
+        result = QualityGateResult(
+            ticker_key, "INCOMPLETE", 0, 0, 0, 0.0, 0,
+            False, False, ("NO_QUALITY_SESSIONS_AFTER_FRESHNESS_CUTOFF",),
+        )
+        out.attrs["ohlcv_quality"] = result.to_dict()
+        return out.iloc[0:0], result
+
     # Auch bei full_history wird die Qualitaet nur im aktuellen
     # Berechnungsfenster bewertet. Die vollstaendige erwartete Zeitachse wird
     # separat erhalten; alte historische Fehler sperren nicht pauschal den
-    # gesamten Ticker fuer aktuelle Berechnungen.
-    window = sessions[-requested_window:]
-    expected_sessions_for_index = sessions if full_history else window
+    # gesamten Ticker fuer aktuelle Berechnungen. Die einzelne, explizit
+    # tolerierte letzte ETF/ETC-Session wird nicht als synthetische NaN-Zeile
+    # in den Datenframe eingefuegt.
+    window = quality_sessions[-requested_window:]
+    expected_sessions_for_index = quality_sessions if full_history else window
     expected_index = pd.DatetimeIndex(pd.to_datetime(expected_sessions_for_index))
     if preserve_expected_sessions:
         out = out.reindex(out.index.union(expected_index).sort_values())
-    if len(sessions) < minimum_window_sessions:
+    if len(quality_sessions) < minimum_window_sessions:
         result = QualityGateResult(
             ticker_key, "INCOMPLETE", len(window), 0, len(window), 0.0,
             len(window), False, False, ("INSUFFICIENT_EXPECTED_SESSIONS",),
@@ -648,12 +732,16 @@ def apply_ohlcv_quality_gate(
         reason_codes.add("LATEST_EXPECTED_BAR_INVALID")
     if require_structure and not last3_valid:
         reason_codes.add("LAST_3_EXPECTED_BARS_INVALID")
+    if freshness_grace_applied:
+        reason_codes.add("ETF_ETC_FRESHNESS_GRACE_48H")
 
     incomplete = (
         valid_ratio < 0.95 or max_run > 1 or not latest_valid
         or (require_structure and not last3_valid)
     )
-    status = "INCOMPLETE" if incomplete else ("PASS_WITH_EXCLUSIONS" if excluded_bars else "PASS")
+    status = "INCOMPLETE" if incomplete else (
+        "PASS_WITH_EXCLUSIONS" if (excluded_bars or freshness_grace_applied) else "PASS"
+    )
     result = QualityGateResult(
         ticker_key, status, expected_bars, valid_bars, excluded_bars,
         round(valid_ratio, 6), max_run, latest_valid, last3_valid,
@@ -665,6 +753,19 @@ def apply_ohlcv_quality_gate(
     out.attrs["ohlcv_quality_window_sessions"] = int(window_sessions)
     out.attrs["ohlcv_quality_exclusions"] = exclusion_details
     out.attrs["ohlcv_quality_special_cases"] = special_case_details
+    if freshness_grace_applied:
+        out.attrs["ohlcv_quality_freshness_grace"] = {
+            "applied": True,
+            "instrument_type": _resolve_instrument_metadata(
+                ticker_key, out, instrument_type, instrument_name
+            )[0],
+            "hours": 48,
+            "missing_expected_sessions": 1,
+            "actual_latest_session": str(sessions[-2]),
+            "expected_latest_session": str(sessions[-1]),
+        }
+    else:
+        out.attrs["ohlcv_quality_freshness_grace"] = {"applied": False}
     return out, result
 
 
@@ -771,6 +872,8 @@ def quality_checked_frame(
     full_history: bool = False,
     as_of=None,
     timeframe: str = "1d",
+    instrument_type=None,
+    instrument_name=None,
 ) -> pd.DataFrame:
     gated, result = apply_ohlcv_quality_gate(
         frame, ticker, window_sessions=window_sessions,
@@ -779,6 +882,8 @@ def quality_checked_frame(
         full_history=full_history,
         as_of=as_of,
         timeframe=timeframe,
+        instrument_type=instrument_type,
+        instrument_name=instrument_name,
     )
     if result.quality_status == "INCOMPLETE":
         blocked = pd.DataFrame()

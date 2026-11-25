@@ -132,7 +132,7 @@ def _download_close(ticker: str, start: dt.date, end: dt.date) -> pd.Series:
         blocked.attrs["ohlcv_quality"] = {
             "ticker": ticker, "quality_status": "INCOMPLETE",
             "reason_codes": ["HISTORICAL_BENCHMARK_CALENDAR_UNAVAILABLE"],
-            "rule_version": "1.3",
+            "rule_version": "1.4",
         }
         return blocked
     window_sessions = min(252, len(expected))

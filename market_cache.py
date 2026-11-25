@@ -204,8 +204,16 @@ def get_or_fetch_series(
 
 
 
-def _quality_checked_frame(ticker: str, frame: pd.DataFrame, *, require_structure: bool = False,
-                           window_sessions: int = 252, as_of=None) -> pd.DataFrame:
+def _quality_checked_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    *,
+    require_structure: bool = False,
+    window_sessions: int = 252,
+    as_of=None,
+    instrument_type=None,
+    instrument_name=None,
+) -> pd.DataFrame:
     if frame is None or frame.empty:
         return pd.DataFrame()
     try:
@@ -223,6 +231,8 @@ def _quality_checked_frame(ticker: str, frame: pd.DataFrame, *, require_structur
             frame, ticker, require_structure=require_structure,
             window_sessions=max(1, effective_window), preserve_expected_sessions=True,
             as_of=as_of,
+            instrument_type=instrument_type,
+            instrument_name=instrument_name,
         )
         if quality.quality_status == "INCOMPLETE":
             blocked = pd.DataFrame()
@@ -235,7 +245,7 @@ def _quality_checked_frame(ticker: str, frame: pd.DataFrame, *, require_structur
         blocked.attrs["ohlcv_quality"] = {
             "ticker": ticker, "quality_status": "INCOMPLETE",
             "reason_codes": [f"QUALITY_GATE_ERROR:{type(exc).__name__}"],
-            "rule_version": "1.3",
+            "rule_version": "1.4",
         }
         print(f"WARNUNG-OHLCV-QUALITY: {ticker}: Gate-Fehler ({type(exc).__name__}: {exc}).")
         return blocked
@@ -609,7 +619,9 @@ def _get_yf_history_raw(ticker: str) -> pd.DataFrame:
 
 
 
-def get_yf_history(ticker: str) -> pd.DataFrame:
+def get_yf_history(
+    ticker: str, *, instrument_type=None, instrument_name=None
+) -> pd.DataFrame:
     """Gibt nur nach dem zentralen Tages-OHLCV-Quality-Gate Daten frei.
 
     EXSA.DE ist der gemeinsame EU-Benchmark. Wenn die Cache-/SQLite-/Yahoo-
@@ -624,6 +636,8 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
         checked = _quality_checked_frame(
             ticker_key,
             _get_yf_history_raw(ticker_key),
+            instrument_type=instrument_type,
+            instrument_name=instrument_name,
         )
     except Exception as exc:
         # Nur der gemeinsame EU-Benchmark erhaelt diesen zusaetzlichen
@@ -637,7 +651,7 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
             "ticker": ticker_key,
             "quality_status": "INCOMPLETE",
             "reason_codes": [f"PRIMARY_FETCH_ERROR:{type(exc).__name__}"],
-            "rule_version": "1.3",
+            "rule_version": "1.4",
         }
         print(
             "INFO: EU-BENCHMARK-DIRECT-FALLBACK EXSA.DE nach "
@@ -680,7 +694,9 @@ def get_yf_history(ticker: str) -> pd.DataFrame:
     return checked if checked is not None else pd.DataFrame()
 
 
-def get_yf_history_from_yahoo(ticker: str, *, period: str = "1y") -> pd.DataFrame:
+def get_yf_history_from_yahoo(
+    ticker: str, *, period: str = "1y", instrument_type=None, instrument_name=None
+) -> pd.DataFrame:
     """Direkter Yahoo-Finance-Fallback ohne SQLite-/Projektcache.
 
     Diese Funktion ist bewusst vom persistenten historischen Bestand und vom
@@ -704,7 +720,7 @@ def get_yf_history_from_yahoo(ticker: str, *, period: str = "1y") -> pd.DataFram
             "ticker": symbol,
             "quality_status": "INCOMPLETE",
             "reason_codes": [f"YAHOO_PROVIDER_ERROR:{type(exc).__name__}"],
-            "rule_version": "1.3",
+            "rule_version": "1.4",
         }
         print(
             f"WARNUNG-YAHOO-FALLBACK: {symbol} direkter Abruf fehlgeschlagen "
@@ -718,12 +734,15 @@ def get_yf_history_from_yahoo(ticker: str, *, period: str = "1y") -> pd.DataFram
             "ticker": symbol,
             "quality_status": "INCOMPLETE",
             "reason_codes": ["YAHOO_NO_DATA"],
-            "rule_version": "1.3",
+            "rule_version": "1.4",
         }
         print(f"WARNUNG-YAHOO-FALLBACK: {symbol} Yahoo lieferte keine Daten.")
         return blocked
 
-    checked = _quality_checked_frame(symbol, raw, window_sessions=252)
+    checked = _quality_checked_frame(
+        symbol, raw, window_sessions=252,
+        instrument_type=instrument_type, instrument_name=instrument_name,
+    )
     quality = checked.attrs.get("ohlcv_quality", {})
     status = str(quality.get("quality_status", "INCOMPLETE")).upper()
     print(

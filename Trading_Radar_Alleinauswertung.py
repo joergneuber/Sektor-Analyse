@@ -20244,6 +20244,133 @@ def _trading_radar_performance_aussagen_sperren(text):
             line = "Positionsvergleich zum MSCI World: NICHT VERFÜGBAR (Richtungs-/Renditebasis nicht vollständig belegt)."
         cleaned.append(line)
     text = "\n".join(cleaned)
+
+    # Suppress unsupported portfolio claims across physical line breaks.
+    # Preserve independently identifiable position context before the claim
+    # (e.g. "XDEQ.DE: Rückenwind ... aber") and a single position fact after
+    # a semicolon. Never treat numbered Markdown headings as sentence starts.
+    portfolio_marker = re.compile(
+        r"(?i)\bPortfolio(?:[- ]Gesamt)?[- ]?performance\b(?!\s*:\s*NICHT VERFÜGBAR)"
+    )
+    # Keep only explicitly labelled individual positions or ticker-like
+    # uppercase identifiers. Generic prose labels (Portfolio:, Position:,
+    # INFO:, STATUS:, etc.) must never be mistaken for securities.
+    individual_fact_after_semicolon = re.compile(
+        r"^\s*(?:(?i:Einzelposition(?:en)?|Einzelwert(?:e)?|Position)\s+"
+        r"[A-Z0-9][A-Z0-9.^=_-]{0,14}\s*[:=]|"
+        r"(?!(?:INFO|PORTFOLIO|POSITION|POSITIONS|STATUS|HINWEIS|FAZIT|"
+        r"ERGEBNIS|KOMMENTAR|RISIKO|SUMMARY|NOTE|TOTAL|GESAMT)\s*[:=])"
+        r"[A-Z][A-Z0-9.^=_-]{1,14}\s*[:=])"
+    )
+    position_context_before_claim = re.compile(
+        r"(?i)(?:\b(?:Einzelposition(?:en)?|Einzelwert(?:e)?|Position)\b|"
+        r"\([A-Z0-9^=_-]{1,16}(?:\.[A-Z0-9]{1,6})?\)|"
+        r"\b[A-Z][A-Z0-9.^=_-]{0,14}\s*[:=])"
+    )
+
+    def _is_numbered_heading_dot(source, index):
+        if source[index] != ".":
+            return False
+        line_start = source.rfind("\n", 0, index) + 1
+        prefix = source[line_start:index]
+        return bool(
+            re.fullmatch(r"[ \t]*(?:#{1,6}[ \t]*)?\d{1,2}", prefix)
+            and index + 1 < len(source)
+            and source[index + 1].isspace()
+        )
+
+    def _is_sentence_boundary(source, index):
+        char = source[index]
+        if char in "!?":
+            return index + 1 == len(source) or source[index + 1].isspace()
+        if char == ".":
+            if _is_numbered_heading_dot(source, index):
+                return False
+            # A dot followed by a digit is a decimal separator, not prose
+            # punctuation. A terminal dot after the decimal digits is.
+            return index + 1 == len(source) or source[index + 1].isspace()
+        return False
+
+    while True:
+        claim = portfolio_marker.search(text)
+        if not claim:
+            break
+
+        sentence_start = 0
+        for index in range(claim.start()):
+            if _is_sentence_boundary(text, index):
+                sentence_start = index + 1
+
+        # A numbered/Markdown heading is a hard boundary on its own. The
+        # section title remains intact when the following paragraph contains
+        # the unsupported aggregate claim.
+        for newline in re.finditer(r"\n", text[:claim.start()]):
+            line_start = newline.end()
+            line_end = text.find("\n", line_start)
+            if line_end < 0:
+                line_end = len(text)
+            heading_line = text[line_start:line_end]
+            if re.match(
+                r"^[ \t]*(?:#{1,6}\s*)?\d{1,2}\s*[.·]\s+\S",
+                heading_line,
+            ):
+                sentence_start = line_end + 1
+
+        while sentence_start < claim.start() and text[sentence_start].isspace():
+            sentence_start += 1
+
+        sentence_end = len(text)
+        for index in range(claim.end(), len(text)):
+            if _is_sentence_boundary(text, index):
+                sentence_end = index + 1
+                break
+            # A new numbered/markdown section is a hard boundary even when
+            # the preceding sentence omitted its terminal punctuation.
+            if text[index] == "\n":
+                heading = re.match(
+                    r"[ \t]*(?:#{1,6}\s*)?\d{1,2}\s*[.·]\s*[^\r\n]+",
+                    text[index + 1:],
+                )
+                if heading:
+                    sentence_end = index
+                    break
+
+        prefix = text[sentence_start:claim.start()]
+        preserve_prefix = bool(position_context_before_claim.search(prefix))
+        replacement_start = claim.start() if preserve_prefix else sentence_start
+
+        # Preserve only independently identified position clauses after
+        # semicolons, not arbitrary following portfolio prose. Consecutive
+        # position facts may be retained; the first unrelated clause ends the
+        # retained run.
+        retained_parts = []
+        semicolons = list(re.finditer(r";", text[claim.end():sentence_end]))
+        for index, match in enumerate(semicolons):
+            absolute = claim.end() + match.start()
+            retained_start = absolute + 1
+            while retained_start < sentence_end and text[retained_start].isspace():
+                retained_start += 1
+            retained_end = (
+                claim.end() + semicolons[index + 1].start()
+                if index + 1 < len(semicolons) else sentence_end
+            )
+            for pos in range(retained_start, retained_end):
+                if _is_sentence_boundary(text, pos):
+                    retained_end = pos + 1
+                    break
+            candidate = text[retained_start:retained_end].strip()
+            if individual_fact_after_semicolon.match(candidate):
+                retained_parts.append(candidate)
+            elif retained_parts:
+                break
+        retained = "; ".join(retained_parts)
+
+        replacement = "Portfolio-Gesamtperformance: NICHT VERFÜGBAR."
+        updated = text[:replacement_start] + replacement
+        if retained:
+            updated += " " + retained
+        text = updated + text[sentence_end:]
+
     section = re.search(r"(?im)^[ \t]*(?:#{1,6}\s*)?7\s*[.·]\s*MSCI-Vergleich[^\r\n]*$", text)
     if section:
         tail = text[section.end():]
@@ -20260,6 +20387,104 @@ def _trading_radar_performance_aussagen_sperren(text):
         )
         text = text[:section.end()] + body + text[end:]
     return text
+
+
+
+def _trading_radar_unprovenanzierte_thesen_treasury_werte_sperren(text):
+    """Qualify each unprovenanced US-10Y observation in section 2.
+
+    The persistent thesis register is left untouched. Only the report prose is
+    changed. Observation boundaries and label variants follow the report gate's
+    canonical parser; original line endings are preserved byte-for-byte.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    section = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?2\s*[.·]\s*Thesen-Update[^\r\n]*\r?$", text
+    )
+    if not section:
+        return text
+    tail = text[section.end():]
+    next_section = re.search(
+        r"(?im)^[ \t]*(?:#{1,6}\s*)?3\s*[.·]\s*Ereignisradar[^\r\n]*\r?$", tail
+    )
+    if not next_section:
+        return text
+    end = section.end() + next_section.start()
+    body = text[section.end():end]
+
+    try:
+        from trading_radar_report_gate import (
+            _US10Y_EXPLICIT_LABEL_RE,
+            _US10Y_VALUE_AFTER_LABEL_RE,
+            _treasury_observation_has_complete_provenance,
+        )
+    except ImportError:
+        # Fail closed: if the authoritative provenance parser is unavailable,
+        # recognized US-10Y values are not allowed to remain unqualified.
+        _US10Y_EXPLICIT_LABEL_RE = re.compile(
+            r"(?i)(?:US\s*[- ]?\s*10Y(?:\s*[- ]?Treasury)?"
+            r"|US\s*[- ]?\s*10J(?:\s*[- ]?Rendite)?"
+            r"|10Y\s*[- ]?US\s*[- ]?Treasury"
+            r"|10\s*[- ]?year\s+US\s+Treasury"
+            r"|10\s*[- ]?year\s+US\s+yield"
+            r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*"
+            r"(?:Treasury(?:\s*[- ]?Zins)?|Staatsanleihen?zins|Rendite))"
+        )
+        _US10Y_VALUE_AFTER_LABEL_RE = re.compile(
+            r"(?i)^\s*(?:\([^)]*\)\s*)?"
+            r"(?:(?::|=|bei\b|liegt\s+bei\b|beträgt\b|betrug\b|"
+            r"auf\b|von\b|at\b|is\b)\s*)?"
+            r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*(?:%|Prozent)(?!\w)"
+        )
+        _treasury_observation_has_complete_provenance = None
+
+    qualifier = (
+        " (Registerbeleg ohne separate Quellenprovenienz; "
+        "nicht als aktueller Messwert verwendet)"
+    )
+    updated_lines = []
+    for original_line in body.splitlines(keepends=True):
+        line_ending = ""
+        content = original_line
+        if content.endswith("\r\n"):
+            content, line_ending = content[:-2], "\r\n"
+        elif content.endswith("\n") or content.endswith("\r"):
+            content, line_ending = content[:-1], content[-1:]
+
+        observations = []
+        for label_match in _US10Y_EXPLICIT_LABEL_RE.finditer(content):
+            value_match = _US10Y_VALUE_AFTER_LABEL_RE.match(
+                content[label_match.end():label_match.end() + 100]
+            )
+            if value_match:
+                observations.append((label_match, value_match))
+
+        replacements = []
+        for index, (label_match, value_match) in enumerate(observations):
+            observation_end = (
+                observations[index + 1][0].start()
+                if index + 1 < len(observations)
+                else len(content)
+            )
+            observation_record = content[:observation_end]
+            has_provenance = (
+                bool(_treasury_observation_has_complete_provenance(observation_record))
+                if _treasury_observation_has_complete_provenance is not None
+                else False
+            )
+            if not has_provenance:
+                span_end = label_match.end() + value_match.end()
+                replacements.append(
+                    (label_match.start(), span_end, label_match.group(0) + qualifier)
+                )
+
+        # Apply right-to-left so spans from the canonical parser remain valid.
+        for span_start, span_end, replacement in reversed(replacements):
+            content = content[:span_start] + replacement + content[span_end:]
+        updated_lines.append(content + line_ending)
+
+    return text[:section.end()] + "".join(updated_lines) + text[end:]
 
 
 def speichere_ergebnis(text, eingabedateien=None):
@@ -20717,6 +20942,7 @@ def speichere_ergebnis(text, eingabedateien=None):
             text = _trading_radar_treasury_provenienz_ergänzen(
                 text, makro_text, eingabedateien
             )
+            text = _trading_radar_unprovenanzierte_thesen_treasury_werte_sperren(text)
         except (OSError, ValueError, TypeError) as treasury_exc:
             validation_errors.append(
                 f"Treasury-Provenienz nicht lesbar: {type(treasury_exc).__name__}: {treasury_exc}"

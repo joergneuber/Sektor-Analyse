@@ -589,8 +589,40 @@ def _quality_payload(frame: pd.DataFrame) -> dict:
     return quality if isinstance(quality, dict) else {}
 
 
-def _quality_is_current_and_usable(frame: pd.DataFrame, ticker: str) -> tuple[bool, str]:
-    """Require a current last session and three valid final sessions."""
+def _is_etf_or_etc(instrument_type=None, instrument_name=None) -> bool:
+    """Zentrale Klassifikation aus dem OHLCV-Stammdatenmodul."""
+    try:
+        from historical_ohlcv import _is_etf_or_etc as classify
+        return bool(classify(instrument_type, instrument_name))
+    except Exception:
+        return False
+
+
+def _etf_etc_freshness_grace_is_active(
+    ticker: str, actual_latest, expected_latest, *, as_of=None
+) -> bool:
+    """Nutzt die zentrale, kalenderbasierte ETF/ETC-48h-Regel."""
+    try:
+        from historical_ohlcv import _etf_etc_freshness_grace_is_active as grace
+        return bool(grace(ticker, actual_latest, expected_latest, as_of=as_of))
+    except Exception:
+        return False
+
+
+def _quality_is_current_and_usable(
+    frame: pd.DataFrame,
+    ticker: str,
+    *,
+    instrument_type=None,
+    instrument_name=None,
+    as_of=None,
+) -> tuple[bool, str]:
+    """Require a current last session and three valid final sessions.
+
+    ETFs/ETCs may use exactly the immediately previous exchange session for
+    up to 48h after the expected session's official close. Structural quality,
+    history depth and the last-three-valid-bars checks remain unchanged.
+    """
     quality = _quality_payload(frame)
     status = str(quality.get("quality_status") or "").upper()
     reasons = quality.get("reason_codes") or []
@@ -600,24 +632,42 @@ def _quality_is_current_and_usable(frame: pd.DataFrame, ticker: str) -> tuple[bo
         return False, "LATEST_EXPECTED_BAR_INVALID"
     if quality.get("last_3_bars_valid") is not True:
         return False, "LAST_3_EXPECTED_BARS_INVALID"
+    if frame is None or frame.empty:
+        return False, "NO_VALID_HISTORY"
     try:
         from ohlcv_quality_gate import _last_completed_session_date
-        expected_latest = _last_completed_session_date(ticker)
+        expected_latest = (
+            _last_completed_session_date(ticker)
+            if as_of is None
+            else _last_completed_session_date(ticker, as_of=as_of)
+        )
     except Exception as exc:
         return False, f"EXPECTED_SESSION_LOOKUP_ERROR:{type(exc).__name__}"
     if expected_latest is None:
         return False, "EXPECTED_LATEST_SESSION_UNAVAILABLE"
-    if frame is None or frame.empty:
-        return False, "NO_VALID_HISTORY"
+
+    frame_attrs = getattr(frame, "attrs", {}) if isinstance(frame, pd.DataFrame) else {}
+    instrument_type = instrument_type or frame_attrs.get("ohlcv_instrument_type")
+    instrument_name = instrument_name or frame_attrs.get("ohlcv_instrument_name")
     actual_latest = pd.Timestamp(frame.index.max()).date()
     expected_latest = pd.Timestamp(expected_latest).date()
     if actual_latest < expected_latest:
-        return False, (
-            f"STALE_HISTORY: letzter Kurs {actual_latest.isoformat()}, "
-            f"erwartete abgeschlossene Session {expected_latest.isoformat()}"
+        if not (
+            _is_etf_or_etc(instrument_type, instrument_name)
+            and _etf_etc_freshness_grace_is_active(
+                ticker, actual_latest, expected_latest, as_of=as_of
+            )
+        ):
+            return False, (
+                f"STALE_HISTORY: letzter Kurs {actual_latest.isoformat()}, "
+                f"erwartete abgeschlossene Session {expected_latest.isoformat()}"
+            )
+        print(
+            f"INFO-OHLCV-FRESHNESS: {ticker}: ETF/ETC-Kurs "
+            "innerhalb der zusaetzlichen 48h-Gueltigkeit akzeptiert."
         )
     if len(frame) < 60:
-        return False, f"INSUFFICIENT_CONTIGUOUS_HISTORY ({0 if frame is None else len(frame)} Bars)"
+        return False, f"INSUFFICIENT_CONTIGUOUS_HISTORY ({len(frame)} Bars)"
     tail = frame[["Open", "High", "Low", "Close"]].tail(3)
     if tail.isna().any().any() or not np.isfinite(tail.to_numpy(dtype=float)).all():
         return False, "LAST_3_BARS_CONTAIN_INVALID_OHLC"
@@ -656,13 +706,19 @@ def _persist_usable_provider_history(ticker: str, frame: pd.DataFrame, source: s
     return rows
 
 
-def fetch_history(ticker: str) -> pd.DataFrame:
+def fetch_history(
+    ticker: str,
+    *,
+    instrument_type=None,
+    instrument_name=None,
+) -> pd.DataFrame:
     """Load DB-first, then use a quality-gated provider fallback.
 
     A source is accepted only when the latest expected session and the last
     three expected sessions are valid. Missing sessions are never silently
     dropped: indicator calculations use only the uninterrupted valid tail.
     """
+    etf_etc = _is_etf_or_etc(instrument_type, instrument_name)
     db_quality = {}
     db_error = ""
     if _ist_gold_spot_ticker(ticker):
@@ -700,6 +756,8 @@ def fetch_history(ticker: str) -> pd.DataFrame:
         db_quality = dict(_quality_payload(raw_db))
         db_frame = _valid_ohlc_history(raw_db)
         db_frame.attrs["history_source"] = "historical_ohlcv.sqlite"
+        db_frame.attrs["ohlcv_instrument_type"] = instrument_type
+        db_frame.attrs["ohlcv_instrument_name"] = instrument_name
         usable, reason = _quality_is_current_and_usable(db_frame, ticker)
         if usable:
             print(
@@ -721,10 +779,16 @@ def fetch_history(ticker: str) -> pd.DataFrame:
     if str(ticker or "").strip().upper() == "PPFD.SG":
         try:
             raw = _fetch_twelvedata_ppfd_history()
-            from ohlcv_quality_gate import apply_ohlcv_quality_gate
+            from ohlcv_quality_gate import apply_ohlcv_quality_gate, historical_frame_as_of
+            gate_kwargs = {
+                "instrument_type": instrument_type,
+                "instrument_name": instrument_name,
+                **({"as_of": historical_frame_as_of(raw, ticker)} if etf_etc else {}),
+            }
             gated, quality = apply_ohlcv_quality_gate(
                 raw, ticker, window_sessions=252,
                 require_structure=True, preserve_expected_sessions=True,
+                **gate_kwargs,
             )
             gated.attrs["ohlcv_quality"] = quality.to_dict()
             gated.attrs["history_source"] = "TwelveData:XSTU"
@@ -732,6 +796,8 @@ def fetch_history(ticker: str) -> pd.DataFrame:
             quality_frame.attrs.update(getattr(gated, "attrs", {}) or {})
             frame = _valid_ohlc_history(gated)
             frame.attrs["history_source"] = "TwelveData:XSTU"
+            frame.attrs["ohlcv_instrument_type"] = instrument_type
+            frame.attrs["ohlcv_instrument_name"] = instrument_name
             usable, reason = _quality_is_current_and_usable(frame, ticker)
             if usable:
                 try:
@@ -760,16 +826,24 @@ def fetch_history(ticker: str) -> pd.DataFrame:
             period="max", auto_adjust=False, actions=False
         )
         cleaned = clean_history(hist)
-        from ohlcv_quality_gate import apply_ohlcv_quality_gate
+        from ohlcv_quality_gate import apply_ohlcv_quality_gate, historical_frame_as_of
+        gate_kwargs = {
+            "instrument_type": instrument_type,
+            "instrument_name": instrument_name,
+            **({"as_of": historical_frame_as_of(cleaned, ticker)} if etf_etc else {}),
+        }
         gated, quality = apply_ohlcv_quality_gate(
             cleaned, ticker, window_sessions=252,
             require_structure=True, preserve_expected_sessions=True,
+            **gate_kwargs,
         )
         gated.attrs["ohlcv_quality"] = quality.to_dict()
         gated.attrs["history_source"] = "Yahoo-Fallback"
         quality_frame = gated.copy()
         quality_frame.attrs.update(getattr(gated, "attrs", {}) or {})
         frame = _valid_ohlc_history(gated)
+        frame.attrs["ohlcv_instrument_type"] = instrument_type
+        frame.attrs["ohlcv_instrument_name"] = instrument_name
         usable, reason = _quality_is_current_and_usable(frame, ticker)
         if usable:
             try:
@@ -1142,7 +1216,7 @@ def sector_relative_strength(row, close: float, data: pd.DataFrame) -> str:
         return "Nicht verfügbar – kein Sektor-ETF im Projekt-Mapping"
     try:
         stock_5d = (float(data["Close"].iloc[-1]) / float(data["Close"].iloc[-6]) - 1) * 100
-        etf_data = fetch_history(etf)
+        etf_data = fetch_history(etf, instrument_type="ETF")
         if etf_data.empty or len(etf_data) < 6:
             return f"Nicht verfügbar – {etf}: keine ausreichenden ETF-Daten"
         etf_5d = (float(etf_data["Close"].iloc[-1]) / float(etf_data["Close"].iloc[-6]) - 1) * 100
@@ -1900,7 +1974,15 @@ def run_local(input_file: str = INPUT_FILE, output_csv: str = OUTPUT_CSV,
         if not ticker:
             raise RuntimeError("Interner Fehler: offene Position ohne Ticker nach Validierung.")
         print(f"CHECK: {ticker} | {row.get('Name','')}")
-        hist = fetch_history(ticker)
+        instrument_type = row.get("Produkt_Typ", "")
+        instrument_name = row.get("Name", "")
+        if _is_etf_or_etc(instrument_type, instrument_name):
+            hist = fetch_history(
+                ticker, instrument_type=instrument_type,
+                instrument_name=instrument_name,
+            )
+        else:
+            hist = fetch_history(ticker)
         tech = analyze_technical(hist, row)
         if not hist.empty and tech.close is not None:
             ath = float(hist["High"].max())
