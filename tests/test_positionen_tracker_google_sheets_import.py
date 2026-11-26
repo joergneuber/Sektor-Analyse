@@ -465,3 +465,126 @@ def test_tracker_recalculates_performance_from_stored_course_when_live_quote_mis
     # darf aber weder Stop-/TP-Werte noch den Positionsstatus auslösen/verändern.
     for column, original_value in original_management.items():
         assert updated.loc[0, column] == original_value
+
+
+def test_yahoo_quotes_use_30_calendar_days_and_keep_10_session_quality_gate(monkeypatch):
+    """Regression: EU tickers need enough calendar coverage for ten sessions."""
+    import datetime as dt
+    import sys
+    import types
+
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    requested = []
+    gate_calls = []
+
+    class FakeTicker:
+        def __init__(self, ticker):
+            self.ticker = ticker
+
+        def history(self, **kwargs):
+            requested.append((self.ticker, kwargs))
+            return pd.DataFrame(
+                {"Close": [123.45]},
+                index=pd.DatetimeIndex([dt.datetime.now().date() - dt.timedelta(days=1)]),
+            )
+
+    def fake_gate(frame, ticker, **kwargs):
+        gate_calls.append((ticker, kwargs))
+        return frame, types.SimpleNamespace(quality_status="PASS")
+
+    monkeypatch.setattr(tracker.yf, "Ticker", FakeTicker)
+    monkeypatch.setitem(
+        sys.modules, "ohlcv_quality_gate",
+        types.SimpleNamespace(apply_ohlcv_quality_gate=fake_gate),
+    )
+
+    tickers = ("VNA.DE", "PPFD.SG", "SPYI.DE", "LI7U.DE", "GC=F")
+    for ticker in tickers:
+        market = "FUTURES" if ticker == "GC=F" else "EU"
+        assert tracker.hole_aktuellen_kurs(ticker, market) == pytest.approx(123.45)
+
+    assert [ticker for ticker, _ in requested] == list(tickers)
+    for _, kwargs in requested:
+        assert kwargs["interval"] == "1d"
+        assert "period" not in kwargs
+        start = kwargs["start"]
+        assert isinstance(start, dt.datetime)
+        age = dt.datetime.now() - start
+        assert 29.99 <= age.total_seconds() / 86400 <= 30.01
+
+    assert len(gate_calls) == 5
+    for _, kwargs in gate_calls:
+        assert kwargs == {
+            "window_sessions": 10,
+            "preserve_expected_sessions": True,
+            "full_history": True,
+        }
+
+
+def test_new_eu_positions_receive_quote_performance_and_duplicate_ticker_stays_separate(monkeypatch):
+    """Regression: new rows update normally; same ticker means separate trades."""
+    import datetime as dt
+    import sys
+    import types
+
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    calls = []
+
+    class FakeTicker:
+        def __init__(self, ticker):
+            self.ticker = ticker
+
+        def history(self, **kwargs):
+            calls.append((self.ticker, kwargs))
+            close = {
+                "VNA.DE": 17.92,
+                "PPFD.SG": 39.84,
+                "SPYI.DE": 11.80,
+                "LI7U.DE": 9.61,
+            }[self.ticker]
+            return pd.DataFrame(
+                {"Close": [close]},
+                index=pd.DatetimeIndex([dt.datetime.now().date() - dt.timedelta(days=1)]),
+            )
+
+    def fake_gate(frame, ticker, **kwargs):
+        return frame, types.SimpleNamespace(quality_status="PASS")
+
+    monkeypatch.setattr(tracker.yf, "Ticker", FakeTicker)
+    monkeypatch.setitem(
+        sys.modules, "ohlcv_quality_gate",
+        types.SimpleNamespace(apply_ohlcv_quality_gate=fake_gate),
+    )
+
+    entries = [
+        ("VNA.DE", 17.07, 17.92),
+        ("PPFD.SG", 37.94, 39.84),
+        ("SPYI.DE", 11.24, 11.80),
+        ("LI7U.DE", 9.15, 9.61),
+        # Gleicher Ticker, aber eigenständiger Trade mit anderem Einstieg.
+        ("VNA.DE", 16.00, 17.92),
+    ]
+    rows = []
+    for ticker, entry, _ in entries:
+        row = {
+            column: (float("nan") if column in tracker.NUMERISCHE_SPALTEN else "")
+            for column in tracker.SPALTEN
+        }
+        row.update({
+            "Ticker": ticker, "Name": ticker, "Sektor": "", "Markt": "EU",
+            "Waehrung": "EUR", "Richtung": "Long", "Ideen_Quelle": "Manuell",
+            "Einstiegsdatum": "23.11.2026", "Einstieg": entry,
+            "Stop": 1.0, "TP1": 100.0, "TP2": 120.0, "Status": "Offen",
+        })
+        rows.append(row)
+
+    updated, _ = tracker.aktualisiere_positionen(pd.DataFrame(rows, columns=tracker.SPALTEN))
+
+    assert len(updated) == 5
+    assert updated["Ticker"].tolist() == [item[0] for item in entries]
+    for idx, (_, entry, quote) in enumerate(entries):
+        assert updated.loc[idx, "Aktueller_Kurs"] == pytest.approx(quote)
+        expected = round((quote - entry) / entry * 100, 2)
+        assert updated.loc[idx, "Performance_Seit_Einstieg%"] == pytest.approx(expected)
+        assert updated.loc[idx, "Status"] == "Offen"
+    assert [ticker for ticker, _ in calls] == ["VNA.DE", "PPFD.SG", "SPYI.DE", "LI7U.DE", "VNA.DE"]
