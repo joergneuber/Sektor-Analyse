@@ -152,3 +152,128 @@ def test_treasury_promotion_is_idempotent():
     errors = validate_report(twice)
     assert not [item for item in errors if item.startswith("M-02:")], errors
     assert not [item for item in errors if item.startswith("M-07:")], errors
+
+
+def test_run1343_dgs10_identity_markers_do_not_break_following_provenance_fields():
+    macro = (
+        "US 10Y Treasury: 4.9800 | Datenstand=2026-10-29 | STATUS=REAL | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations?series_id=DGS10) | "
+        "SERIES_ID=DGS10 | INSTRUMENT=US10Y_NOMINAL | "
+        "RETRIEVED_AT=2026-10-30T14:30:00+00:00 | DELAY_DAYS=1 | UNIT=%"
+    )
+    normalized = _normalize(_run1281_report(), macro)
+    executive = normalized.split("2. Thesen-Update", 1)[0]
+    fred_line = next(
+        line for line in executive.splitlines()
+        if "US 10Y Treasury (FRED DGS10" in line
+    )
+
+    assert "Abrufzeit: 2026-10-30T14:30:00+00:00" in fred_line
+    assert "Datenstichtag: 2026-10-29" in fred_line
+    assert "Einheit: %" in fred_line
+    assert "Verzögerung: 1 Kalendertage" in fred_line
+    errors = validate_report(normalized)
+    assert not [item for item in errors if item.startswith("M-02:")], errors
+    assert not [item for item in errors if item.startswith("M-07:")], errors
+
+
+def test_run1343_rejects_wrong_or_partial_dgs10_identity_markers():
+    base = (
+        "US 10Y Treasury: 4.9800 | Datenstand=2026-10-29 | STATUS=REAL | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations?series_id=DGS10) | "
+        "SERIES_ID={series_id} | INSTRUMENT={instrument} | "
+        "RETRIEVED_AT=2026-10-30T14:30:00+00:00 | DELAY_DAYS=1 | UNIT=%"
+    )
+    for series_id, instrument in (
+        ("DFII10", "US10Y_NOMINAL"),
+        ("DGS10", "US10Y_REAL"),
+        ("DGS10", ""),
+    ):
+        macro = base.format(series_id=series_id, instrument=instrument)
+        normalized = _normalize(_run1281_report(), macro)
+        executive = normalized.split("2. Thesen-Update", 1)[0]
+        assert "US 10Y Treasury (FRED DGS10" not in executive
+        assert "Nicht zugeordneter Makro-Textwert: 10Y Treasury 4.98%" in executive
+
+
+def test_run1343_live_and_fred_values_are_enriched_independently_before_multi_value_gate():
+    report = report_fixture(ohlcv_warning=False)
+    original_rates = (
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | "
+        "Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | "
+        "Einheit: % | Verzögerung: 1 Börsentag."
+    )
+    mixed_rates = (
+        "Zinsen/Renditen: US-10J-Rendite (^TNX): 4.85% "
+        "(Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-26T05:30:44+00:00; "
+        "Datenstichtag: 2026-11-25; Einheit: %; Verzögerung: Tages-Schlusskurs); "
+        "US 10Y Treasury 4,91 % (Quelle: FRED DGS10 "
+        "(https://api.stlouisfed.org/fred/series/observations); "
+        "Abrufzeit: NICHT VERFÜGBAR; Datenstichtag: 2026-11-24; "
+        "Einheit: NICHT VERFÜGBAR; Verzögerung: NICHT VERFÜGBAR); "
+        "Realzins 10Y TIPS 2,88 %."
+    )
+    assert original_rates in report
+    report = report.replace(original_rates, mixed_rates, 1)
+    macro = (
+        "US 10Y Treasury: 4.9100 | Datenstand=2026-11-24 | STATUS=REAL | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) | "
+        "SERIES_ID=DGS10 | INSTRUMENT=US10Y_NOMINAL | "
+        "RETRIEVED_AT=2026-11-26T05:03:40+00:00 | DELAY_DAYS=2 | UNIT=%"
+    )
+
+    normalized = production._trading_radar_treasury_provenienz_ergänzen(
+        report, macro, {"Makro": "Makro_Briefing(2026-11-26).txt"}
+    )
+    rates_line = next(
+        line for line in normalized.splitlines()
+        if line.startswith("Zinsen/Renditen:")
+    )
+
+    assert "US-10J-Rendite (^TNX): 4.85%" in rates_line
+    assert "US 10Y Treasury 4,91 %" in rates_line
+    assert "Abrufzeit: 2026-11-26T05:03:40+00:00" in rates_line
+    assert "Datenstichtag: 2026-11-24" in rates_line
+    assert "Einheit: %" in rates_line
+    assert "Verzögerung: 2 Kalendertage" in rates_line
+    assert "MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR" not in rates_line
+    errors = validate_report(normalized)
+    assert not [item for item in errors if item.startswith("M-02:")], errors
+    assert not [item for item in errors if item.startswith("M-07:")], errors
+
+
+def test_run1343_multi_value_row_stays_blocked_when_dgs10_identity_is_invalid():
+    report = report_fixture(ohlcv_warning=False)
+    original_rates = (
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | "
+        "Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | "
+        "Einheit: % | Verzögerung: 1 Börsentag."
+    )
+    mixed_rates = (
+        "Zinsen/Renditen: US-10J-Rendite (^TNX): 4.85% "
+        "(Quelle: Yahoo Finance (^TNX); Abrufzeit: 2026-11-26T05:30:44+00:00; "
+        "Datenstichtag: 2026-11-25; Einheit: %; Verzögerung: Tages-Schlusskurs); "
+        "US 10Y Treasury 4,91 % (Quelle: FRED DGS10; Abrufzeit: NICHT VERFÜGBAR; "
+        "Datenstichtag: 2026-11-24; Einheit: NICHT VERFÜGBAR; "
+        "Verzögerung: NICHT VERFÜGBAR); Realzins 10Y TIPS 2,88 %."
+    )
+    assert original_rates in report
+    report = report.replace(original_rates, mixed_rates, 1)
+    macro = (
+        "US 10Y Treasury: 4.9100 | Datenstand=2026-11-24 | STATUS=REAL | "
+        "SOURCE=FRED DGS10 (https://api.stlouisfed.org/fred/series/observations) | "
+        "SERIES_ID=DFII10 | INSTRUMENT=US10Y_NOMINAL | "
+        "RETRIEVED_AT=2026-11-26T05:03:40+00:00 | DELAY_DAYS=2 | UNIT=%"
+    )
+
+    normalized = production._trading_radar_treasury_provenienz_ergänzen(
+        report, macro, {"Makro": "Makro_Briefing(2026-11-26).txt"}
+    )
+    rates_line = next(
+        line for line in normalized.splitlines()
+        if line.startswith("Zinsen/Renditen:")
+    )
+    assert "Abrufzeit: NICHT VERFÜGBAR" in rates_line
+    assert "MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR" in rates_line
+    errors = validate_report(normalized)
+    assert any(item.startswith("M-07:") for item in errors), errors
