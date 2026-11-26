@@ -19694,6 +19694,7 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
         """Read provenance only from top-level delimiter-separated fields."""
         result = {}
         conflicts = set()
+        identity_fields = {}
         source = segment or ""
         first_segment = True
         for delimiter, begin, finish in _top_level_segments(source):
@@ -19711,6 +19712,30 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
                     break
                 continue
             first_segment = False
+            # Current DGS10 cache records include explicit series/instrument
+            # identity between SOURCE and the remaining provenance fields.
+            # These two markers are transparent to the provenance sequence,
+            # but only the exact nominal-US10Y identity is accepted. A partial,
+            # contradictory, or foreign identity invalidates the whole record.
+            identity_match = re.match(
+                r"(?i)^\s*(SERIES_ID|INSTRUMENT)\s*[:=]\s*(.*?)\s*$",
+                piece,
+            )
+            if identity_match:
+                identity_key = identity_match.group(1).upper()
+                identity_value = identity_match.group(2).strip()
+                expected_identity = {
+                    "SERIES_ID": "DGS10",
+                    "INSTRUMENT": "US10Y_NOMINAL",
+                }[identity_key]
+                previous_identity = identity_fields.get(identity_key)
+                if (
+                    identity_value.upper() != expected_identity
+                    or (previous_identity is not None and previous_identity.upper() != identity_value.upper())
+                ):
+                    conflicts.add("SOURCE_IDENTITY")
+                identity_fields[identity_key] = identity_value
+                continue
             parsed = _field_from_segment(piece)
             if not parsed:
                 # Known macro status markers and opaque parenthetical notes do
@@ -19731,6 +19756,8 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
                 conflicts.add(key)
             elif key not in result:
                 result[key] = value
+        if identity_fields and set(identity_fields) != {"SERIES_ID", "INSTRUMENT"}:
+            conflicts.add("SOURCE_IDENTITY")
         # Preserve a visible invalid marker instead of silently choosing the
         # first of two contradictory values. The report gate rejects it.
         for key in conflicts:
@@ -20020,6 +20047,79 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             return matching[0]
         return explicit_conflict_metadata_for(report_value, decimals)
 
+    us10y_value_pattern = re.compile(
+        r"(?i)(?:US\s*[- ]?\s*10Y(?:\s*[- ]?Treasury)?"
+        r"|US\s*[- ]?\s*10J(?:\s*[- ]?Rendite)?"
+        r"|10Y\s*\)?\s*[- ]?\s*(?:US\s*[- ]?\s*)?Treasury"
+        r"|10Y\s*\)\s*[- ]?\s*Rendite"
+        r"|10\s*[- ]?year(?:\s+US)?\s+Treasury"
+        r"|10\s*[- ]?year(?:\s+US)?\s+yield"
+        r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*(?:Treasury(?:\s*[- ]?\s*Zins)?|Staatsanleihen?zins|Rendite))"
+        r"\s*(?:\([^)]*\)\s*)?(?:(?::|=|bei\b|liegt\s+bei\b|beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
+        r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*(?:%|Prozent)(?!\w)"
+    )
+
+    def enrich_multiple_us10y_observations(line):
+        """Value-bind missing local fields before deciding a multi-value row is ambiguous."""
+        matches = list(us10y_value_pattern.finditer(line))
+        if len(matches) < 2:
+            return line
+        # Work right-to-left so inserting/replacing a later annotation never
+        # invalidates the source offsets of an earlier observation.
+        for match in reversed(matches):
+            raw_value = match.group("value").replace(",", ".")
+            decimals = len(raw_value.split(".", 1)[1]) if "." in raw_value else 0
+            try:
+                report_value = float(raw_value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            candidate = _local_parenthesized_annotation(line, match.end())
+            candidate_fields = fields(candidate[2]) if candidate else {}
+            if candidate and not candidate_fields and _has_opaque_parenthetical_context(
+                line[candidate[0]:candidate[1] + 1]
+            ):
+                # A foreign/opaque annotation is a hard attribution boundary.
+                continue
+            if "FOREIGN_CONTEXT" in candidate_fields:
+                continue
+            source_metadata = source_metadata_for(report_value, decimals)
+            if not source_metadata:
+                continue
+            existing_source = candidate_fields.get("Quelle")
+            matched_source = source_metadata.get("Quelle")
+            if (
+                not is_missing(existing_source)
+                and not is_missing(matched_source)
+                and re.sub(r"\s+", " ", str(existing_source)).strip().casefold()
+                != re.sub(r"\s+", " ", str(matched_source)).strip().casefold()
+            ):
+                # A value match alone cannot replace a different provider's
+                # local identity (e.g. Yahoo ^TNX) with FRED DGS10 metadata.
+                continue
+            required = ("Quelle", "Abrufzeit", "Datenstichtag", "Einheit", "Verzögerung")
+            if all(not is_missing(candidate_fields.get(key)) for key in required):
+                continue
+            defaults = {key: "NICHT VERFÜGBAR" for key in required}
+            for key, value in source_metadata.items():
+                if key in defaults and value and not is_missing(value):
+                    defaults[key] = value
+            merged = {
+                key: (
+                    candidate_fields[key]
+                    if not is_missing(candidate_fields.get(key))
+                    else defaults[key]
+                )
+                for key in required
+            }
+            annotation_text = _format_local_provenance(merged)
+            if candidate:
+                ann_open, ann_close, ann_content = candidate
+                unknown = _unknown_local_annotation_text(ann_content)
+                line = line[:ann_open + 1] + annotation_text + unknown + line[ann_close:]
+            else:
+                insertion = match.end()
+                line = line[:insertion] + " (" + annotation_text + ")" + line[insertion:]
+        return line
 
     output = []
     in_fenced_block = False
@@ -20114,11 +20214,11 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
             output.append(line)
             continue
         if len(set(observations)) > 1:
-            # Multiple observations on one rates line are safe only when the
-            # canonical report-gate parser can prove complete, separately
-            # scoped provenance for every labelled occurrence. This permits
-            # the explicit FRED-vs-live split while retaining fail-closed
-            # behavior for unscoped or contradictory values.
+            # The line may contain a live Yahoo value and a separate FRED
+            # DGS10 value. First attach only the uniquely value-matched macro
+            # provenance to the corresponding observation; never borrow the
+            # live observation's fields for the macro value.
+            line = enrich_multiple_us10y_observations(line)
             records = _us10y_observation_records(
                 line, allow_run1270_context=allow_run1270_context
             )
@@ -20135,20 +20235,13 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
                 )
                 output.append(line)
                 continue
+            if source_file and not re.search(r"(?i)(?:^|[|;(])\s*Quelldatei\s*[:=]", line):
+                line += f" | Quelldatei: {source_file}"
+            output.append(line)
+            continue
 
         report_decimal = observations[0]
-        raw_match = re.search(
-            r"(?i)(?:US\s*[- ]?\s*10Y(?:\s*[- ]?Treasury)?"
-            r"|US\s*[- ]?\s*10J(?:\s*[- ]?Rendite)?"
-            r"|10Y\s*\)?\s*[- ]?\s*(?:US\s*[- ]?\s*)?Treasury"
-            r"|10Y\s*\)\s*[- ]?\s*Rendite"
-            r"|10\s*[- ]?year(?:\s+US)?\s+Treasury"
-            r"|10\s*[- ]?year(?:\s+US)?\s+yield"
-            r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*(?:Treasury(?:\s*[- ]?\s*Zins)?|Staatsanleihen?zins|Rendite))"
-            r"\s*(?:\([^)]*\)\s*)?(?:(?::|=|bei\b|liegt\s+bei\b|beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
-            r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*(?:%|Prozent)(?!\w)",
-            line,
-        )
+        raw_match = us10y_value_pattern.search(line)
         raw_value = raw_match.group("value") if raw_match else format(report_decimal, "f")
         decimals = len(raw_value.replace(",", ".").split(".", 1)[1]) if "." in raw_value.replace(",", ".") else 0
         try:
