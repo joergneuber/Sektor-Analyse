@@ -995,7 +995,10 @@ def hole_aktuellen_kurs(ticker, markt):
                 return None
             return float(hist['Close'].iloc[-1])
         if str(ticker).upper() == GOLD_FUTURES_TICKER:
-            hist = yf.Ticker(ticker).history(period="10d")
+            # 30 Kalendertage liefern genügend Abdeckung für das unveränderte
+            # 10-Handelssitzungen-Quality-Gate (Wochenenden/Feiertage inklusive).
+            yahoo_start = datetime.datetime.now() - datetime.timedelta(days=30)
+            hist = yf.Ticker(ticker).history(start=yahoo_start, interval="1d")
             if hist.empty:
                 return None
             from ohlcv_quality_gate import apply_ohlcv_quality_gate
@@ -1031,7 +1034,10 @@ def hole_aktuellen_kurs(ticker, markt):
                 return None
             return float(hist['Close'].iloc[-1])
         else:  # Europäische Börsen (jedes Punkt-Suffix) via yfinance
-            hist = yf.Ticker(ticker).history(period="10d")
+            # 30 Kalendertage liefern genügend Abdeckung für das unveränderte
+            # 10-Handelssitzungen-Quality-Gate (Wochenenden/Feiertage inklusive).
+            yahoo_start = datetime.datetime.now() - datetime.timedelta(days=30)
+            hist = yf.Ticker(ticker).history(start=yahoo_start, interval="1d")
             if hist.empty:
                 return None
             from ohlcv_quality_gate import apply_ohlcv_quality_gate
