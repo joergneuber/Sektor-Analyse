@@ -978,6 +978,30 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
         session_cutoff = _completed_nyse_session_cutoff(snapshot_clock)
     except RuntimeError as exc:
         return report_text, [f"Markt-Snapshot nicht erstellt: NYSE-Kalenderfehler: {exc}"]
+
+    # The market-regime report requires one completed close shared by VIX and
+    # Yahoo's DX-Y.NYB daily bar. An XNYS early close is not sufficient for the
+    # 17:00 ET ICE USDX close (e.g. the 2026-11-27 Black Friday session).
+    # Reuse the report gate's independently tested Cboe/ICE calendar contract;
+    # if that calendar cannot establish the common date, do not publish a
+    # plausible-looking but temporally inconsistent market snapshot.
+    try:
+        from trading_radar_report_gate import _m02_expected_common_session_date
+
+        common_risk_session = _m02_expected_common_session_date(
+            snapshot_clock.to_pydatetime()
+        )
+    except Exception as exc:
+        return report_text, [
+            "Markt-Snapshot nicht erstellt: gemeinsamer VIX/DXY-Kalenderfehler: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    if common_risk_session is None:
+        return report_text, [
+            "Markt-Snapshot nicht erstellt: gemeinsamer abgeschlossener VIX/DXY-Stichtag "
+            "ist nicht verifizierbar."
+        ]
+    session_cutoff = min(session_cutoff, common_risk_session)
     if fetcher is None:
         try:
             import yfinance as yf
