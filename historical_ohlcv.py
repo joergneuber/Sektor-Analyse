@@ -669,6 +669,7 @@ def sync_open_positions(
     *,
     repair_gaps: bool = True,
     gap_lookback_days: int = DEFAULT_GAP_LOOKBACK_DAYS,
+    refresh_current_session_gaps: bool = False,
 ) -> dict:
     """Registriert offene Positionsticker und baut/aktualisiert deren Historie."""
     open_tickers = load_open_position_tickers(positions_file)
@@ -684,6 +685,7 @@ def sync_open_positions(
         repair_gaps=repair_gaps,
         gap_lookback_days=gap_lookback_days,
         only_tickers=open_tickers,
+        refresh_current_session_gaps=refresh_current_session_gaps,
     )
     stats["open_position_tickers"] = len(open_tickers)
     stats["registered"] = registered
@@ -1096,10 +1098,15 @@ def update_database(
     repair_gaps: bool = True,
     gap_lookback_days: int = DEFAULT_GAP_LOOKBACK_DAYS,
     only_tickers: Iterable[str] | None = None,
+    refresh_current_session_gaps: bool = False,
 ) -> dict:
     """Update current bars and automatically repair recent missing sessions."""
     if gap_lookback_days < 1:
         raise ValueError("gap_lookback_days muss mindestens 1 sein")
+    if refresh_current_session_gaps and only_tickers is None:
+        raise ValueError(
+            "refresh_current_session_gaps ist nur fuer eine explizit begrenzte Tickerliste erlaubt"
+        )
     init_db(db_path)
     discovered = discover_universe(source_file, dynamic_universe)
     if only_tickers is None:
@@ -1170,8 +1177,32 @@ def update_database(
         legacy_expected = pd.Timestamp.today().normalize() - pd.offsets.BDay(1)
         current_latest = _db_latest(conn)
         stale = []
+        session_gap_tickers = []
+        missing_history_tickers = []
         for ticker in provider_tickers:
             if ticker not in current_latest:
+                if refresh_current_session_gaps:
+                    # Ein fehlgeschlagener Erstaufbau hinterlaesst noch keinen
+                    # last_date-Wert. Diese offenen Positionen muessen trotzdem
+                    # den gezielten Retry-Pfad ausloesen; eine Session-Abfrage
+                    # ist ohne gespeicherte Historie nicht erforderlich.
+                    stale.append(ticker)
+                    session_gap_tickers.append(ticker)
+                    missing_history_tickers.append(ticker)
+                continue
+            if refresh_current_session_gaps:
+                # Der normale Stale-Download wartet bewusst mehrere Tage.
+                # Bei offenen Positionen muss die finale Pruefung jedoch auch
+                # die gerade abgeschlossene Boersensitzung nachladen koennen.
+                # Ausschliesslich die explizit uebergebene Positionsliste wird
+                # hier geprueft; das globale Universum wird nicht neu geladen.
+                from ohlcv_quality_gate import _last_completed_session_date
+                expected_session = _last_completed_session_date(ticker)
+                if expected_session is None:
+                    continue
+                if pd.Timestamp(current_latest[ticker]).date() < pd.Timestamp(expected_session).date():
+                    stale.append(ticker)
+                    session_gap_tickers.append(ticker)
                 continue
             calendar_name = _calendar_name_for_ticker(ticker)
             expected_text = None
@@ -1194,26 +1225,47 @@ def update_database(
             cutoff = expected - pd.Timedelta(days=max(0, STALE_AFTER_DAYS - 1))
             if pd.Timestamp(current_latest[ticker]) < cutoff:
                 stale.append(ticker)
+        if refresh_current_session_gaps:
+            print(
+                "HIST-OHLCV-SESSION-REFRESH: "
+                f"requested={len(provider_tickers)} stale={len(session_gap_tickers)} "
+                f"tickers={','.join(session_gap_tickers) if session_gap_tickers else 'NONE'}"
+            )
         for batch in _chunks(stale, BATCH_SIZE):
-            min_date = min(pd.Timestamp(current_latest[t]) for t in batch) - pd.Timedelta(days=5)
-            try:
-                frames = _download_batch(batch, start=min_date.strftime("%Y-%m-%d"))
-                updated_tickers = set()
-                with conn:
-                    # Bestehendes inkrementelles Update-Verhalten bleibt erhalten:
-                    # Yahoo darf aktuelle Werte im normalen Stale-Update korrigieren.
-                    stats["rows"] += _upsert_frames(
-                        conn, frames, updated_tickers=updated_tickers
+            # Ticker mit vorhandener Historie koennen inkrementell ab dem
+            # letzten gespeicherten Kurs aktualisiert werden. Ticker ohne
+            # Historie benoetigen dagegen denselben kontrollierten Bootstrap
+            # wie beim Erstaufbau (inklusive Sonderbehandlung bekannter IPOs).
+            missing_batch = [ticker for ticker in batch if ticker in missing_history_tickers]
+            existing_batch = [ticker for ticker in batch if ticker not in missing_history_tickers]
+            download_groups = []
+            if existing_batch:
+                min_date = min(
+                    pd.Timestamp(current_latest[ticker]) for ticker in existing_batch
+                ) - pd.Timedelta(days=5)
+                download_groups.append((existing_batch, min_date.strftime("%Y-%m-%d")))
+            if missing_batch:
+                download_groups.extend(_bootstrap_download_groups(missing_batch))
+            for download_tickers, download_start in download_groups:
+                try:
+                    frames = _download_batch(download_tickers, start=download_start)
+                    updated_tickers = set()
+                    with conn:
+                        # Bestehendes inkrementelles Update-Verhalten bleibt erhalten:
+                        # Yahoo darf aktuelle Werte im normalen Stale-Update korrigieren.
+                        stats["rows"] += _upsert_frames(
+                            conn, frames, updated_tickers=updated_tickers
+                        )
+                    stats["updated"] += len(updated_tickers)
+                except Exception as exc:
+                    stats["errors"] += 1
+                    print(
+                        f"WARNUNG-HIST-OHLCV: Update-Batch fehlgeschlagen "
+                        f"({','.join(download_tickers)}): {exc}",
+                        file=sys.stderr,
                     )
-                stats["updated"] += len(updated_tickers)
-            except Exception as exc:
-                stats["errors"] += 1
-                print(
-                    f"WARNUNG-HIST-OHLCV: Update-Batch fehlgeschlagen ({len(batch)}): {exc}",
-                    file=sys.stderr,
-                )
-            if REQUEST_PAUSE_SECONDS:
-                time.sleep(REQUEST_PAUSE_SECONDS)
+                if REQUEST_PAUSE_SECONDS:
+                    time.sleep(REQUEST_PAUSE_SECONDS)
 
         # Selbstheilung: alle erwarteten, aber fehlenden Sessions im begrenzten
         # Lookback-Fenster ermitteln. Nur diese Symbole werden erneut geladen;
@@ -1921,7 +1973,16 @@ def main() -> int:
     )
     parser.add_argument("--no-gap-repair", action="store_true", help="automatische Reparatur erkannter Kursluecken deaktivieren")
     parser.add_argument("--gap-lookback-days", type=int, default=DEFAULT_GAP_LOOKBACK_DAYS, help="Rueckblick fuer die automatische Kursluecken-Reparatur (Kalendertage)")
+    parser.add_argument(
+        "--refresh-current-session-gaps", action="store_true",
+        help=(
+            "wiederholt bei sync-open-positions gezielt den OHLCV-Download offener "
+            "Positionen mit fehlender Historie oder fehlender letzter Handelssitzung"
+        ),
+    )
     args = parser.parse_args()
+    if args.refresh_current_session_gaps and args.command != "sync-open-positions":
+        parser.error("--refresh-current-session-gaps ist nur mit sync-open-positions erlaubt")
 
     if args.command == "update":
         stats = update_database(
@@ -1996,6 +2057,7 @@ def main() -> int:
             args.db, args.source, args.dynamic_universe, args.positions_file,
             repair_gaps=not args.no_gap_repair,
             gap_lookback_days=args.gap_lookback_days,
+            refresh_current_session_gaps=args.refresh_current_session_gaps,
         )
         return 0
     if args.command == "verify-open-positions":
