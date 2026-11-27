@@ -10,6 +10,13 @@ on:
     # 08:00 und 22:00 Uhr Berlin bei der Umstellung MEZ/MESZ korrekt geprueft.
     - cron: '17 6-22 * * 1-5'
 
+# Gemeinsame Sperre fuer alle Workflows, die Offene_Positionen in Drive schreiben.
+# queue: max haelt manuelle und zeitgesteuerte Folge-Laeufe in der Warteschlange.
+concurrency:
+  group: offene-positionen-drive-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   stop-check:
     runs-on: ubuntu-latest

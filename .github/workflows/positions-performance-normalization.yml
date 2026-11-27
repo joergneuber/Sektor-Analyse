@@ -20,9 +20,11 @@ permissions:
   actions: read
   contents: read
 
+# Shared lock with every other workflow that can mutate the positions master/source.
 concurrency:
-  group: positions-performance-normalization-${{ github.ref }}
+  group: offene-positionen-drive-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   normalize-performance:

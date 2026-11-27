@@ -21,8 +21,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: positions-recovery-${{ github.ref }}
+  group: offene-positionen-drive-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   restore-positions:

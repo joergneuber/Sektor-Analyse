@@ -17,6 +17,13 @@ on:
     # Tagen die unmittelbare erste Marktreaktion noch am selben Tag ein
     - cron: '53 17 * * 1-5'
 
+# Gemeinsame Sperre fuer alle Workflows, die Offene_Positionen in Drive schreiben.
+# queue: max haelt manuelle und zeitgesteuerte Folge-Laeufe in der Warteschlange.
+concurrency:
+  group: offene-positionen-drive-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   benchmarks-snapshot:
     runs-on: ubuntu-latest

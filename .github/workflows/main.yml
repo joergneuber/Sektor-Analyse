@@ -6,9 +6,12 @@ on:
   schedule:
     - cron: '17 3 * * 1-5'
 
+# Gemeinsame Sperre fuer alle Workflows, die Offene_Positionen in Drive schreiben.
+# queue: max verhindert, dass manuelle/zeitgesteuerte Folge-Laeufe den wartenden Lauf ersetzen.
 concurrency:
-  group: btc-50w-main-${{ github.ref }}
+  group: offene-positionen-drive-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   run-scripts:
@@ -1366,3 +1369,7 @@ jobs:
               smtp.send_message(msg)
           print(f"Technische Gemini-Fallback-Mail versendet: {status_file.name}")
           PY
+
+      # Positions-Rollback-Snapshots bleiben ausschließlich auf dem Runner.
+      # Keine Übertragung als GitHub-Artifact: Das Repository ist öffentlich
+      # und die Snapshot-Datei kann vertrauliche Positionsdaten enthalten.
