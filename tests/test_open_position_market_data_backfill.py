@@ -721,60 +721,98 @@ def test_outer_rollback_refuses_to_overwrite_external_local_edit(tmp_path):
     assert Path(snapshot + ".manifest.json").exists()
 
 
+def _fake_drive_and_sheets(metadata, values):
+    class Request:
+        def __init__(self, callback): self.callback = callback
+        def execute(self, **kwargs): return self.callback()
+    class Drive:
+        def files(self):
+            class Files:
+                def get(self, **kwargs): return Request(lambda: dict(metadata))
+            return Files()
+    class Sheets:
+        def spreadsheets(self):
+            class Spreadsheet:
+                def get(self, **kwargs):
+                    return Request(lambda: {"sheets": [{"properties": {"title": "Offene_Positionen", "index": 0}}]})
+                class Values:
+                    def batchGet(self, **kwargs):
+                        return Request(lambda: {"valueRanges": [{"values": values}]})
+                def values(self): return self.Values()
+            return Spreadsheet()
+    return Drive(), Sheets()
+
+
+def _content_digest(values):
+    from positions_drive_content import google_sheet_content_sha256
+    class Request:
+        def __init__(self, callback): self.callback = callback
+        def execute(self, **kwargs): return self.callback()
+    class Sheets:
+        def spreadsheets(self):
+            class Spreadsheet:
+                def get(self, **kwargs):
+                    return Request(lambda: {"sheets": [{"properties": {"title": "Offene_Positionen", "index": 0}}]})
+                class Values:
+                    def batchGet(self, **kwargs): return Request(lambda: {"valueRanges": [{"values": values}]})
+                def values(self): return self.Values()
+            return Spreadsheet()
+    return google_sheet_content_sha256(Sheets(), "source-id")
+
+
 def test_drive_revision_check_rejects_remote_edit(tmp_path):
+    values = [["Ticker", "Status"], ["ABC", "Offen"]]
     baseline = {
         "file_id": "source-id", "version": "17",
         "modified_time": "2026-11-26T19:00:00.000Z",
         "mime_type": "application/vnd.google-apps.spreadsheet",
-        "md5_checksum": "",
+        "md5_checksum": "", "remote_content_sha256": _content_digest(values),
     }
-
-    class Request:
-        def execute(self):
-            return {
-                "id": "source-id", "version": "18",
-                "modifiedTime": "2026-11-26T19:05:00.000Z",
-                "mimeType": baseline["mime_type"], "trashed": False,
-            }
-
-    class Files:
-        def get(self, **kwargs):
-            return Request()
-
-    class Drive:
-        def files(self):
-            return Files()
-
-    with pytest.raises(RuntimeError, match="extern geändert"):
-        checker._verify_drive_source_baseline_with_service(Drive(), baseline)
+    metadata = {
+        "id": "source-id", "version": "18",
+        "modifiedTime": "2026-11-26T19:05:00.000Z",
+        "mimeType": baseline["mime_type"], "trashed": False,
+    }
+    drive, sheets = _fake_drive_and_sheets(metadata, [["Ticker", "Status"], ["ABC", "Gestoppt"]])
+    with pytest.raises(RuntimeError, match="Zellinhalte.*geändert"):
+        checker._verify_drive_source_baseline_with_service(drive, baseline, sheets=sheets)
 
 
 def test_drive_revision_check_accepts_exact_baseline():
+    values = [["Ticker", "Status"], ["ABC", "Offen"]]
     baseline = {
         "file_id": "source-id", "version": "17",
         "modified_time": "2026-11-26T19:00:00.000Z",
         "mime_type": "application/vnd.google-apps.spreadsheet",
-        "md5_checksum": "",
+        "md5_checksum": "", "remote_content_sha256": _content_digest(values),
     }
-
-    class Request:
-        def execute(self):
-            return {
-                "id": "source-id", "version": "17",
-                "modifiedTime": "2026-11-26T19:00:00.000Z",
-                "mimeType": baseline["mime_type"], "trashed": False,
-            }
-
-    class Files:
-        def get(self, **kwargs):
-            return Request()
-
-    class Drive:
-        def files(self):
-            return Files()
-
-    result = checker._verify_drive_source_baseline_with_service(Drive(), baseline)
+    metadata = {
+        "id": "source-id", "version": "17",
+        "modifiedTime": baseline["modified_time"],
+        "mimeType": baseline["mime_type"], "trashed": False,
+    }
+    drive, sheets = _fake_drive_and_sheets(metadata, values)
+    result = checker._verify_drive_source_baseline_with_service(drive, baseline, sheets=sheets)
     assert result["version"] == "17"
+
+
+def test_drive_revision_check_accepts_version_bump_when_cell_values_are_identical(capsys):
+    values = [["Ticker", "Status"], ["ABC", "Offen"]]
+    baseline = {
+        "file_id": "source-id", "version": "5",
+        "modified_time": "2026-11-27T10:06:46.000Z",
+        "mime_type": "application/vnd.google-apps.spreadsheet",
+        "md5_checksum": "", "remote_content_sha256": _content_digest(values),
+    }
+    metadata = {
+        "id": "source-id", "version": "6",
+        "modifiedTime": "2026-11-27T10:06:53.000Z",
+        "mimeType": baseline["mime_type"], "trashed": False,
+    }
+    drive, sheets = _fake_drive_and_sheets(metadata, values)
+    result = checker._verify_drive_source_baseline_with_service(drive, baseline, sheets=sheets)
+    assert result["version"] == "6"
+    assert "Zellwerte sind identisch" in capsys.readouterr().out
 
 
 def test_main_keeps_external_local_edit_when_later_sheets_step_fails(tmp_path, monkeypatch):
@@ -962,56 +1000,37 @@ def test_local_backup_unlink_failure_after_drive_commit_does_not_roll_back(tmp_p
 
 
 def test_drive_revision_check_allows_timestamp_only_difference(capsys):
+    values = [["Ticker", "Status"], ["ABC", "Offen"]]
     baseline = {
         "file_id": "source-id", "version": "17",
         "modified_time": "2026-11-26T19:00:00.000Z",
         "mime_type": "application/vnd.google-apps.spreadsheet",
-        "md5_checksum": "",
+        "md5_checksum": "", "remote_content_sha256": _content_digest(values),
     }
-
-    class Request:
-        def execute(self):
-            return {
-                "id": "source-id", "version": "17",
-                "modifiedTime": "2026-11-26T19:05:00.000Z",
-                "mimeType": baseline["mime_type"], "trashed": False,
-            }
-
-    class Files:
-        def get(self, **kwargs):
-            return Request()
-
-    class Drive:
-        def files(self):
-            return Files()
-
-    assert checker._verify_drive_source_baseline_with_service(Drive(), baseline)["version"] == "17"
+    metadata = {
+        "id": "source-id", "version": "17",
+        "modifiedTime": "2026-11-26T19:05:00.000Z",
+        "mimeType": baseline["mime_type"], "trashed": False,
+    }
+    drive, sheets = _fake_drive_and_sheets(metadata, values)
+    assert checker._verify_drive_source_baseline_with_service(drive, baseline, sheets=sheets)["version"] == "17"
     assert "DRIVE-HINWEIS" in capsys.readouterr().out
 
 
 def test_drive_revision_check_reports_changed_protected_fields():
+    values = [["Ticker", "Status"], ["ABC", "Offen"]]
     baseline = {
         "file_id": "source-id", "version": "17",
         "modified_time": "2026-11-26T19:00:00.000Z",
         "mime_type": "application/vnd.google-apps.spreadsheet",
-        "md5_checksum": "",
+        "md5_checksum": "", "remote_content_sha256": _content_digest(values),
     }
+    metadata = {
+        "id": "different-id", "version": "18",
+        "modifiedTime": baseline["modified_time"],
+        "mimeType": baseline["mime_type"], "trashed": False,
+    }
+    drive, sheets = _fake_drive_and_sheets(metadata, values)
+    with pytest.raises(RuntimeError, match="id: erwartet='source-id'"):
+        checker._verify_drive_source_baseline_with_service(drive, baseline, sheets=sheets)
 
-    class Request:
-        def execute(self):
-            return {
-                "id": "source-id", "version": "18",
-                "modifiedTime": baseline["modified_time"],
-                "mimeType": baseline["mime_type"], "trashed": False,
-            }
-
-    class Files:
-        def get(self, **kwargs):
-            return Request()
-
-    class Drive:
-        def files(self):
-            return Files()
-
-    with pytest.raises(RuntimeError, match="version: erwartet='17', aktuell='18'"):
-        checker._verify_drive_source_baseline_with_service(Drive(), baseline)

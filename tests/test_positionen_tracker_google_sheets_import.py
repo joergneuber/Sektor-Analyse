@@ -601,7 +601,7 @@ def test_tracker_persists_drive_revision_baseline_atomically(tmp_path, monkeypat
     # Reuse the existing import fixture so optional integrations never connect.
     tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
     local = tmp_path / "Offene_Positionen.csv"
-    local.write_bytes(b"Ticker;Status\nABC;Offen\n")
+    local.write_bytes(b"Ticker;Einstiegsdatum;Status\nABC;01.01.2026;Offen\n")
     baseline_path = tmp_path / ".offene_positionen_drive_baseline.json"
     monkeypatch.setattr(tracker, "DRIVE_BASELINE_FILE", str(baseline_path))
 
@@ -624,13 +624,73 @@ def test_tracker_persists_drive_revision_baseline_atomically(tmp_path, monkeypat
         def files(self):
             return Files()
 
-    tracker.speichere_drive_quell_baseline(Service(), "drive-id-1", str(local))
+    class SheetsRequest:
+        def __init__(self, result): self.result = result
+        def execute(self, **kwargs): return self.result
+
+    class Sheets:
+        def spreadsheets(self):
+            class Spreadsheet:
+                def get(self, **kwargs):
+                    return SheetsRequest({"sheets": [{"properties": {"title": "Offene_Positionen", "index": 0}}]})
+                class Values:
+                    def batchGet(self, **kwargs):
+                        return SheetsRequest({"valueRanges": [{"values": [["Ticker", "Einstiegsdatum", "Status"], ["ABC", 46023, "Offen"]]}]})
+                def values(self): return self.Values()
+            return Spreadsheet()
+
+    monkeypatch.setattr(tracker, "build", lambda api, version, credentials=None: Sheets())
+    tracker.speichere_drive_quell_baseline(Service(), "drive-id-1", str(local), creds=object())
     payload = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
     assert payload["file_id"] == "drive-id-1"
     assert payload["version"] == "42"
     assert payload["modified_time"] == "2026-11-26T20:00:00.000Z"
     assert payload["local_source_sha256"] == tracker._sha256_local_file(str(local))
+    assert len(payload["remote_content_sha256"]) == 64
     assert baseline_path.stat().st_mode & 0o777 == 0o600
+
+
+
+def test_tracker_refuses_baseline_when_remote_cells_differ_from_uploaded_csv(monkeypatch, tmp_path):
+    import json
+
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    local = tmp_path / "Offene_Positionen.csv"
+    local.write_text(
+        "Ticker;Einstiegsdatum;Status\nABC;01.01.2026;Offen\n",
+        encoding="utf-8",
+    )
+    baseline_path = tmp_path / ".offene_positionen_drive_baseline.json"
+    monkeypatch.setattr(tracker, "DRIVE_BASELINE_FILE", str(baseline_path))
+
+    class Request:
+        def __init__(self, result): self.result = result
+        def execute(self, **kwargs): return self.result
+    class Files:
+        def get(self, **kwargs):
+            return Request({
+                "id": "drive-id-1", "name": "Offene_Positionen",
+                "mimeType": tracker.SHEET_MIME, "version": "42",
+                "modifiedTime": "2026-11-26T20:00:00.000Z", "trashed": False,
+            })
+    class Service:
+        def files(self): return Files()
+    class Sheets:
+        def spreadsheets(self):
+            class Spreadsheet:
+                def get(self, **kwargs):
+                    return Request({"sheets": [{"properties": {"title": "Offene_Positionen", "index": 0}}]})
+                class Values:
+                    def batchGet(self, **kwargs):
+                        return Request({"valueRanges": [{"values": [["Ticker", "Einstiegsdatum", "Status"], ["ABC", 46023, "Gestoppt"]]}]})
+                def values(self): return self.Values()
+            return Spreadsheet()
+    monkeypatch.setattr(tracker, "build", lambda api, version, credentials=None: Sheets())
+
+    with pytest.raises(RuntimeError, match="nicht mit der lokalen Positionsdatei überein"):
+        tracker.speichere_drive_quell_baseline(Service(), "drive-id-1", str(local), creds=object())
+    assert not baseline_path.exists()
 
 
 def test_tracker_refuses_to_persist_baseline_without_remote_revision(monkeypatch, tmp_path):
@@ -692,10 +752,11 @@ def test_drive_baseline_loader_rejects_local_file_drift(tmp_path, monkeypatch):
     local.write_bytes(b"Ticker;Status\nABC;Offen\n")
     baseline_path = tmp_path / ".offene_positionen_drive_baseline.json"
     payload = {
-        "schema_version": 1, "file_id": "drive-id-1", "version": "42",
+        "schema_version": 2, "file_id": "drive-id-1", "version": "42",
         "modified_time": "2026-11-26T20:00:00.000Z",
         "mime_type": "application/vnd.google-apps.spreadsheet",
         "local_source_sha256": hashlib.sha256(local.read_bytes()).hexdigest(),
+        "remote_content_sha256": "a" * 64,
     }
     baseline_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(checker, "DRIVE_BASELINE_FILE", str(baseline_path))
@@ -789,7 +850,6 @@ def test_tracker_upload_captures_baseline_after_upload_and_sheet_formatting(monk
     baseline_path = tmp_path / ".offene_positionen_drive_baseline.json"
     monkeypatch.setattr(tracker, "DRIVE_BASELINE_FILE", str(baseline_path))
     monkeypatch.setattr(tracker, "_finde_upload_mit_token", lambda *a, **k: None)
-    monkeypatch.setattr(tracker, "erstelle_sheet_upload_stream", lambda *a, **k: io.BytesIO(b"xlsx"))
     monkeypatch.setattr(tracker, "MediaIoBaseUpload", lambda *a, **k: object())
     order = []
     monkeypatch.setattr(tracker, "friere_erste_zwei_zeilen_ein", lambda *a, **k: order.append("format"))
@@ -816,12 +876,31 @@ def test_tracker_upload_captures_baseline_after_upload_and_sheet_formatting(monk
         def files(self):
             return Files()
 
+    class SheetsRequest:
+        def __init__(self, result): self.result = result
+        def execute(self, **kwargs): return self.result
+
+    class Sheets:
+        def spreadsheets(self):
+            class Spreadsheet:
+                def get(self, **kwargs):
+                    return SheetsRequest({"sheets": [{"properties": {"title": "Offene_Positionen", "index": 0}}]})
+                class Values:
+                    def batchGet(self, **kwargs):
+                        order.append("baseline-values")
+                        return SheetsRequest({"valueRanges": [{"values": [["Ticker", "Einstiegsdatum", "Status"], ["ABC", 46023, "Offen"]]}]})
+                def values(self): return self.Values()
+            return Spreadsheet()
+
+    monkeypatch.setattr(tracker, "build", lambda api, version, credentials=None: Sheets())
     new_id = tracker.hochladen(Service(), str(local), "folder-id", None, creds=object())
     assert new_id == "new-drive-id"
-    assert order == ["create", "format", "baseline-get"]
+    assert order == ["create", "format", "baseline-get", "baseline-values"]
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert baseline["schema_version"] == 2
     assert baseline["file_id"] == "new-drive-id"
     assert baseline["version"] == "7"
+    assert len(baseline["remote_content_sha256"]) == 64
 
 
 def test_tracker_success_archives_old_master_for_14_day_retention(monkeypatch, tmp_path):
