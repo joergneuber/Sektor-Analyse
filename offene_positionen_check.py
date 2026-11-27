@@ -4177,7 +4177,7 @@ def _drive_metadata_matches(metadata: dict, baseline: dict) -> bool:
     return (
         str(metadata.get("id")) == str(baseline.get("file_id"))
         and str(metadata.get("version")) == str(baseline.get("version"))
-        and str(metadata.get("modifiedTime")) == str(baseline.get("modified_time"))
+        # Drive version is the revision guard; modifiedTime is diagnostic only.
         and str(metadata.get("mimeType")) == str(baseline.get("mime_type"))
         and (not baseline.get("md5_checksum") or str(metadata.get("md5Checksum") or "") == str(baseline.get("md5_checksum")))
     )
@@ -4189,10 +4189,32 @@ def _verify_drive_source_baseline_with_service(drive, baseline: dict) -> dict:
         fields="id,name,mimeType,parents,version,modifiedTime,md5Checksum,trashed",
     ).execute()
     if metadata.get("trashed") or not _drive_metadata_matches(metadata, baseline):
+        expected_fields = {
+            "id": baseline.get("file_id"),
+            "version": baseline.get("version"),
+            "mimeType": baseline.get("mime_type"),
+        }
+        if baseline.get("md5_checksum"):
+            expected_fields["md5Checksum"] = baseline["md5_checksum"]
+        mismatches = [
+            f"{field}: erwartet={expected!r}, aktuell={metadata.get(field)!r}"
+            for field, expected in expected_fields.items()
+            if str(metadata.get(field) or "") != str(expected or "")
+        ]
+        if metadata.get("trashed"):
+            mismatches.append("trashed=True")
         raise RuntimeError(
             "Drive-Konflikt: Die Positionsquelle wurde seit dem Tracker-Upload "
             "extern geändert oder ersetzt. Der alte lokale Stand wird nicht "
-            "hochgeladen; die aktuelle Drive-Datei bleibt unangetastet."
+            "hochgeladen; die aktuelle Drive-Datei bleibt unangetastet. "
+            "Abweichende Schutzfelder: " + "; ".join(mismatches)
+        )
+    if str(metadata.get("modifiedTime")) != str(baseline.get("modified_time")):
+        print(
+            "DRIVE-HINWEIS: modifiedTime weicht bei identischer Drive-Version ab; "
+            "kein Revisionskonflikt (Zeitstempel nur Diagnose). "
+            f"Erwartet={baseline.get('modified_time')!r}, "
+            f"aktuell={metadata.get('modifiedTime')!r}."
         )
     return metadata
 

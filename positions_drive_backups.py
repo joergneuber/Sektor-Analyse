@@ -88,7 +88,10 @@ def archive_drive_backup(
         expected_fields = {
             "id": expected_revision.get("file_id", expected_revision.get("id")),
             "version": expected_revision.get("version"),
-            "modifiedTime": expected_revision.get("modified_time", expected_revision.get("modifiedTime")),
+            # With a version guard, modifiedTime is diagnostic only. If no
+            # version was supplied, retain the legacy timestamp precondition.
+            **({"modifiedTime": expected_revision.get("modified_time", expected_revision.get("modifiedTime"))}
+               if expected_revision.get("version") is None else {}),
             "mimeType": expected_revision.get("mime_type", expected_revision.get("mimeType")),
             "md5Checksum": expected_revision.get("md5_checksum", expected_revision.get("md5Checksum")),
         }
