@@ -277,3 +277,146 @@ def test_run1343_multi_value_row_stays_blocked_when_dgs10_identity_is_invalid():
     assert "MEHRERE_WERTE_NICHT_EINDEUTIG_ZUORDENBAR" in rates_line
     errors = validate_report(normalized)
     assert any(item.startswith("M-07:") for item in errors), errors
+
+
+def test_run1349_final_post_compression_pass_repairs_late_thesis_json_us10y_evidence():
+    """The thesis JSON compressor runs after the first provenance pass.
+
+    Its compact prose can introduce a fresh US-10Y mention, so the final pass
+    must run after compression and before the persisted report gate.
+    """
+    import json
+
+    report = _run1281_report()
+    # Simulate the first, pre-compression enrichment pass.
+    report = _normalize(report, _macro_line())
+
+    thesis_payload = {
+        "theses": [{
+            "thesis_id": "macro-us10y-01",
+            "version": 1,
+            "status": "BESTÄTIGT",
+            "confidence": "mittel",
+            "thesis": "Das nominale US-Zinsniveau bleibt erhöht.",
+            "horizon": "2-4 Wochen",
+            "alternative": "Seitwärtsbewegung",
+            "evidence": ["US 10Y Treasury 4.98%"],
+            "counter_evidence": [],
+            "confirm_triggers": [],
+            "invalidate_triggers": [],
+            "event_dependencies": [],
+            "asset_classes": ["Anleihen"],
+            "candidates": [],
+        }],
+    }
+    marker = "3. Ereignisradar"
+    assert marker in report
+    report = report.replace(
+        marker,
+        "```TRADING_RADAR_THESEN_JSON\n"
+        + json.dumps(thesis_payload, ensure_ascii=False)
+        + "\n```\n"
+        + marker,
+        1,
+    )
+
+    compressed = production._trading_radar_lesefassung_komprimieren(report)
+    generated_evidence = next(
+        line for line in compressed.splitlines()
+        if "Belege: US 10Y Treasury 4.98%" in line
+    )
+    assert "Abrufzeit:" not in generated_evidence
+
+    final_text = _normalize(compressed, _macro_line())
+    repaired_evidence = next(
+        line for line in final_text.splitlines()
+        if "Belege: US 10Y Treasury 4.98%" in line
+    )
+    assert "Quelle: FRED DGS10" in repaired_evidence
+    assert "Abrufzeit: 2026-10-30T14:30:00+00:00" in repaired_evidence
+    assert "Datenstichtag: 2026-10-29" in repaired_evidence
+    assert "Einheit: %" in repaired_evidence
+    assert "Verzögerung: 7 Kalendertage" in repaired_evidence
+    errors = validate_report(final_text)
+    assert not [item for item in errors if item.startswith("M-07:")], errors
+
+
+def test_run1349_production_and_gate_recognize_treasury_rendite_and_zins_descriptors():
+    report = report_fixture(ohlcv_warning=False)
+    original_rates = (
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | "
+        "Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | "
+        "Einheit: % | Verzögerung: 1 Börsentag."
+    )
+    replacement = (
+        "Zinsen/Renditen: US 10Y Treasury Rendite bei 4.91% "
+        "(Datenstichtag: 2026-11-24; Quelle: FRED DGS10).\n"
+        "US 10Y Treasury-Zins stabilisiert sich bei 4.91%."
+    )
+    assert original_rates in report
+    report = report.replace(original_rates, replacement, 1)
+    macro = _macro_line(
+        value="4.9100",
+        observed="2026-11-24",
+        retrieved="2026-11-27T11:14:59+00:00",
+    )
+
+    normalized = _normalize(report, macro)
+    matching_lines = [
+        line for line in normalized.splitlines()
+        if "US 10Y Treasury Rendite bei 4.91%" in line
+        or "US 10Y Treasury-Zins stabilisiert sich bei 4.91%" in line
+    ]
+    assert len(matching_lines) == 2
+    for line in matching_lines:
+        assert "Quelle: FRED DGS10" in line
+        assert "Abrufzeit: 2026-11-27T11:14:59+00:00" in line
+        assert "Datenstichtag: 2026-11-24" in line
+        assert "Einheit: %" in line
+        assert "Verzögerung: 7 Kalendertage" in line
+    errors = validate_report(normalized)
+    assert not [item for item in errors if item.startswith("M-07:")], errors
+
+
+def test_run1349_production_validates_the_compressed_report_after_final_treasury_recheck():
+    from pathlib import Path
+
+    source = Path(production.__file__).read_text(encoding="utf-8")
+    start = source.index("def speichere_ergebnis(")
+    end = source.index("\ndef _gemini_report_metall_status", start)
+    body = source[start:end]
+    compression = body.index("text = _trading_radar_lesefassung_komprimieren(text)")
+    final_recheck = body.index("TRADING_RADAR_US10Y_FINAL_RECHECK=")
+    final_gate = body.index("report_gate_input = text.rstrip()")
+    assert compression < final_recheck < final_gate
+
+
+def test_run1349_production_recognizes_plural_treasury_renditen_wording():
+    """Plural Renditen + 'von' is a numeric US-10Y observation too."""
+    report = report_fixture(ohlcv_warning=False)
+    report = report.replace(
+        "3. Ereignisradar",
+        "stabile US 10Y Treasury Renditen von 4.91%.\n3. Ereignisradar",
+        1,
+    )
+    macro = _macro_line(
+        value="4.9100",
+        observed="2026-11-24",
+        retrieved="2026-11-27T11:14:59+00:00",
+    )
+    normalized = _normalize(report, macro)
+    matching = [
+        line for line in normalized.splitlines()
+        if "stabile US 10Y Treasury Renditen von 4.91%" in line
+    ]
+    assert len(matching) == 1
+    for field in (
+        "Quelle: FRED DGS10",
+        "Abrufzeit: 2026-11-27T11:14:59+00:00",
+        "Datenstichtag: 2026-11-24",
+        "Einheit: %",
+        "Verzögerung: 7 Kalendertage",
+    ):
+        assert field in matching[0]
+    errors = validate_report(normalized)
+    assert not [item for item in errors if item.startswith("M-07:")], errors

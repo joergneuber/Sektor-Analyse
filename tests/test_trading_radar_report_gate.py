@@ -2015,3 +2015,37 @@ def test_m08_scenario_bullets_are_continuations_not_independent_event_records():
 """
     errors = validate_report(report)
     assert not any(error.startswith("M-08") for error in errors)
+
+
+def test_m07_counts_us10y_treasury_rendite_descriptor_as_observation():
+    report = report_fixture()
+    original_rates = (
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | "
+        "Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | "
+        "Einheit: % | Verzögerung: 1 Börsentag."
+    )
+    incomplete_observation = (
+        "Zinsen/Renditen: US 10Y Treasury bei 5,00% | Quelle: FRED DGS10 | "
+        "Abrufzeit: 2026-10-30T04:30:00Z | Datenstichtag: 2026-10-29 | "
+        "Einheit: % | Verzögerung: 1 Börsentag.\n"
+        "US 10Y Treasury Rendite bei 5.00% (Quelle: FRED DGS10; "
+        "Datenstichtag: 2026-10-29)."
+    )
+    assert original_rates in report
+    report = report.replace(original_rates, incomplete_observation, 1)
+    errors = gate.validate_report(report)
+    assert any(item.startswith("M-07:") for item in errors), errors
+
+
+def test_m07_counts_plural_us10y_treasury_renditen_as_observation():
+    report = report_fixture()
+    incomplete_observation = (
+        "stabile US 10Y Treasury Renditen von 4.91%."
+    )
+    report = report.replace(
+        "3. Ereignisradar",
+        incomplete_observation + "\n3. Ereignisradar",
+        1,
+    )
+    errors = gate.validate_report(report)
+    assert any(error.startswith("M-07:") for error in errors), errors
