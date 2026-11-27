@@ -363,9 +363,9 @@ def test_master_selection_and_backup_retention_are_fail_closed():
     assert 'return files[0]["id"], False, None' in selector
     assert "mimeType='{GOOGLE_SHEETS_MIME_TYPE}'" in selector
     assert 'item.get("mimeType") == GOOGLE_SHEETS_MIME_TYPE' in selector
-    assert "_cleanup_backups(sheets, spreadsheet_id)" not in active
-    assert "_cleanup_drive_backups(drive)" not in active
-    assert "dauerhaft erhalten" in active
+    assert "_cleanup_nonproductive_tabs(sheets, spreadsheet_id)" in active
+    assert "_snapshot_google_sheet(drive, spreadsheet_id, sheets=sheets)" in active
+    assert "dauerhaft erhalten" not in active
 
 
 def test_existing_history_reader_never_converts_google_errors_to_empty_archive():
@@ -882,3 +882,182 @@ def test_position_key_rejects_invalid_calendar_date_without_raw_fallback():
     bad = row("BADKEY", "Bad Key", "2026-31-01", "10.00")
     with pytest.raises(RuntimeError, match="Ungueltiges Datum"):
         mod._position_key(bad)
+
+
+
+def test_cleanup_nonproductive_tabs_deletes_only_after_productive_tabs_exist(monkeypatch):
+    class Request:
+        def __init__(self, value): self.value = value
+        def execute(self): return self.value
+
+    class FakeSheets:
+        def __init__(self):
+            self.tabs = [
+                {"sheetId": 1, "title": "Offene Positionen+Check"},
+                {"sheetId": 2, "title": "Geschlossene Positionen"},
+                {"sheetId": 3, "title": "_BACKUP_Offene Positionen+Check_123"},
+                {"sheetId": 4, "title": "__TMP_OFFEN_123"},
+            ]
+            self.deleted = []
+        def spreadsheets(self):
+            outer = self
+            class API:
+                def get(self, **kwargs):
+                    return Request({"sheets": [{"properties": dict(x)} for x in outer.tabs]})
+                def batchUpdate(self, **kwargs):
+                    requests = kwargs["body"]["requests"]
+                    outer.deleted = [x["deleteSheet"]["sheetId"] for x in requests]
+                    outer.tabs = [x for x in outer.tabs if x["sheetId"] not in outer.deleted]
+                    return Request({})
+            return API()
+
+    fake = FakeSheets()
+    monkeypatch.setattr(mod, "_google_batch_update_with_retry",
+                        lambda sheets, spreadsheet_id, body, context:
+                        fake.spreadsheets().batchUpdate(body=body).execute())
+    removed = mod._cleanup_nonproductive_tabs(fake, "sheet-id")
+    assert set(removed) == {
+        "_BACKUP_Offene Positionen+Check_123", "__TMP_OFFEN_123"
+    }
+    assert fake.deleted == [3, 4]
+    assert [x["title"] for x in fake.tabs] == [
+        "Offene Positionen+Check", "Geschlossene Positionen"
+    ]
+
+
+def test_cleanup_nonproductive_tabs_fails_closed_if_productive_tab_missing(monkeypatch):
+    class Request:
+        def execute(self): return {"sheets": [{"properties": {"sheetId": 1, "title": "Extra"}}]}
+    class FakeSheets:
+        def spreadsheets(self):
+            class API:
+                def get(self, **kwargs): return Request()
+            return API()
+    called = []
+    monkeypatch.setattr(mod, "_google_batch_update_with_retry",
+                        lambda *args, **kwargs: called.append(True))
+    with pytest.raises(RuntimeError, match="Produktiv-Tab"):
+        mod._cleanup_nonproductive_tabs(FakeSheets(), "sheet-id")
+    assert called == []
+
+
+def test_snapshot_requires_and_verifies_drive_copy_content(monkeypatch):
+    class Request:
+        def __init__(self, value): self.value = value
+        def execute(self): return self.value
+    class Files:
+        def copy(self, **kwargs): return Request({"id": "verified-backup"})
+    class Drive:
+        def files(self): return Files()
+    fingerprints = iter(["same", "same"])
+    monkeypatch.setattr(mod, "google_sheet_content_sha256",
+                        lambda sheets, spreadsheet_id: next(fingerprints))
+    assert mod._snapshot_google_sheet(Drive(), "master", sheets=object()) == "verified-backup"
+
+
+def test_snapshot_rejects_mismatching_drive_copy_content(monkeypatch):
+    class Request:
+        def execute(self): return {"id": "corrupt-backup"}
+    class Files:
+        def copy(self, **kwargs): return Request()
+    class Drive:
+        def files(self): return Files()
+    fingerprints = iter(["source", "different"])
+    monkeypatch.setattr(mod, "google_sheet_content_sha256",
+                        lambda sheets, spreadsheet_id: next(fingerprints))
+    with pytest.raises(RuntimeError, match="Fingerprint"):
+        mod._snapshot_google_sheet(Drive(), "master", sheets=object())
+
+
+def test_full_open_tab_verification_compares_every_cell_and_accepts_numeric_types():
+    expected = [
+        ["Offene Positionen+Check | Stand 27.11.2026 12:00", ""],
+        list(mod.HEADERS),
+        ["AAA", "Name", "", "", "", "", "Long", "Offen"] + [""] * (len(mod.HEADERS) - 8),
+    ]
+    actual = [list(row) for row in expected]
+    actual[2][8] = 46000.0
+    expected[2][8] = 46000
+
+    class Request:
+        def execute(self): return {"values": actual}
+    class Values:
+        def get(self, **kwargs):
+            if "valueRenderOption" in kwargs:
+                assert kwargs["valueRenderOption"] == "UNFORMATTED_VALUE"
+            return Request()
+    class Sheets:
+        def spreadsheets(self):
+            class API:
+                def values(self): return Values()
+            return API()
+
+    assert mod._verify_open_tab_full_content(Sheets(), "sheet-id", expected) == actual
+    actual[2][mod.HEADERS.index("Name")] = "FALSCHER NAME"
+    with pytest.raises(RuntimeError, match="Vollständige Tab-1-Inhaltsprüfung"):
+        mod._verify_open_tab_full_content(Sheets(), "sheet-id", expected)
+
+
+def test_post_cleanup_verification_detects_any_history_cell_change():
+    expected_open = [["Stand"], list(mod.HEADERS)]
+    expected_history = [["Historie | Stand"], list(mod.HISTORY_DISPLAY_HEADERS), ["AAA"]]
+    actual_history = [list(row) for row in expected_history]
+
+    class Request:
+        def __init__(self, values): self.values = values
+        def execute(self): return {"values": self.values}
+    class Values:
+        def get(self, **kwargs):
+            if "Offene Positionen+Check" in kwargs["range"]:
+                return Request(expected_open)
+            return Request(actual_history)
+    class Sheets:
+        def spreadsheets(self):
+            class API:
+                def values(self): return Values()
+            return API()
+
+    # Keep the test focused on the post-cleanup two-tab matrix comparison.
+    original = mod._verify_open_tab_full_content
+    mod._verify_open_tab_full_content = lambda *args, **kwargs: expected_open
+    try:
+        mod._verify_tabs_after_cleanup(Sheets(), "sheet-id", expected_open, expected_history)
+        actual_history[2][0] = "CHANGED"
+        with pytest.raises(RuntimeError, match="Tab-2-Nachprüfung"):
+            mod._verify_tabs_after_cleanup(Sheets(), "sheet-id", expected_open, expected_history)
+    finally:
+        mod._verify_open_tab_full_content = original
+
+
+def test_full_history_verification_checks_every_business_column_and_numbering():
+    record = {column: "" for column in mod.HISTORY_HEADERS}
+    record.update({
+        "Ticker": "ABC", "Name": "Example AG", "Richtung": "Long",
+        "Einstieg": 100.0, "Einstiegsdatum": "01.01.2025",
+        "Ausstiegsdatum": "02.01.2025", "Ausstiegskurs": 110.0,
+        "Performance_Seit_Einstieg%": 10.0, "Status": "Verkauft",
+    })
+    key = mod._history_key(record)
+    expected = {key: [record[column] for column in mod.HISTORY_HEADERS]}
+    actual_row = [record[column] for column in mod.HISTORY_HEADERS]
+    for index, column in enumerate(mod.HISTORY_HEADERS):
+        if column in {"Einstiegsdatum", "Ausstiegsdatum"}:
+            actual_row[index] = mod._date_to_sheets_serial(actual_row[index], column, 3, strict=True)
+    actual = [["Historie | Stand"], list(mod.HISTORY_DISPLAY_HEADERS), actual_row + [1]]
+
+    class Request:
+        def execute(self): return {"values": actual}
+    class Values:
+        def get(self, **kwargs):
+            assert kwargs["valueRenderOption"] == "UNFORMATTED_VALUE"
+            return Request()
+    class Sheets:
+        def spreadsheets(self):
+            class API:
+                def values(self): return Values()
+            return API()
+
+    assert mod._verify_history_full_content(Sheets(), "sheet-id", expected) == actual
+    actual[2][mod.HISTORY_HEADERS.index("Sektor")] = "Wrong Sector"
+    with pytest.raises(RuntimeError, match="Spalte 'Sektor'"):
+        mod._verify_history_full_content(Sheets(), "sheet-id", expected)

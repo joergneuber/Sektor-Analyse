@@ -190,10 +190,9 @@ def _install_upsert_readback_harness(monkeypatch, tmp_path, *, fail_after_stage=
     })
     local_df = pd.DataFrame([local_values], columns=header)
 
-    # The Google readback deliberately differs from the calculated/local row.
-    # The orchestration must export this verified Google row, not local_values.
+    # The fake Google readback mirrors the exact canonical payload written by
+    # the orchestration. The all-cell verification must accept this exact match.
     drive_row = [local_values[column] for column in header]
-    drive_row[header.index("Name")] = "NAME_FROM_GOOGLE_SHEETS"
     drive_rows = [
         ["Offene Positionen+Check | Stand Integrationstest"] + [""] * (len(header) - 1),
         header,
@@ -204,6 +203,7 @@ def _install_upsert_readback_harness(monkeypatch, tmp_path, *, fail_after_stage=
     history_row = [""] * len(history_header)
     if history_header:
         history_row[0] = "1"
+        history_row[-1] = 1
     history_rows = [
         ["Geschlossene Positionen | Stand Integrationstest"] + [""] * (len(history_header) - 1),
         history_header,
@@ -218,7 +218,7 @@ def _install_upsert_readback_harness(monkeypatch, tmp_path, *, fail_after_stage=
             return self.result
 
     class _Values:
-        def get(self, *, spreadsheetId, range):
+        def get(self, *, spreadsheetId, range, **kwargs):
             if "Offene Positionen+Check" in range:
                 return _Request({"values": drive_rows})
             if "Geschlossene Positionen" in range:
@@ -255,8 +255,11 @@ def _install_upsert_readback_harness(monkeypatch, tmp_path, *, fail_after_stage=
     monkeypatch.setattr(checker, "read_existing_history", lambda *args, **kwargs: history_rows)
     monkeypatch.setattr(checker, "MINIMUM_PROTECTED_HISTORY_ROWS", 0)
     monkeypatch.setattr(checker, "_history_key", lambda row: ("stable-history-row",))
-    monkeypatch.setattr(checker, "_snapshot_google_sheet", lambda *args: None)
-    monkeypatch.setattr(checker, "_write_sheet", lambda *args, **kwargs: None)
+    monkeypatch.setattr(checker, "_snapshot_google_sheet", lambda *args, **kwargs: "verified-drive-backup-id")
+    monkeypatch.setattr(checker, "_cleanup_nonproductive_tabs", lambda *args: [])
+    def _write_expected_open_payload(_sheets, _spreadsheet_id, _title, values, *_args, **_kwargs):
+        drive_rows[:] = checker._canonicalize_sheet_dates(values)
+    monkeypatch.setattr(checker, "_write_sheet", _write_expected_open_payload)
     monkeypatch.setattr(checker, "_append_missing_history_rows", lambda *args, **kwargs: 0)
     monkeypatch.setattr(checker, "_sort_and_number_closed_history", lambda *args: 0)
     monkeypatch.setattr(checker, "_align_history_date_columns_best_effort", lambda *args: True)
@@ -271,7 +274,10 @@ def _install_upsert_readback_harness(monkeypatch, tmp_path, *, fail_after_stage=
         monkeypatch.setattr(checker, "_enforce_productive_tab_order", fail_tab_order)
     else:
         monkeypatch.setattr(checker, "_enforce_productive_tab_order", lambda *args: None)
-    monkeypatch.setattr(checker, "_update_closed_history_timestamp", lambda *args: "ok")
+    def _update_timestamp(*args):
+        history_rows[0][0] = "ok"
+        return "ok"
+    monkeypatch.setattr(checker, "_update_closed_history_timestamp", _update_timestamp)
 
     closed_df = pd.DataFrame(columns=checker.HISTORY_HEADERS)
     return local_df, closed_df, drive_row
@@ -292,8 +298,8 @@ def test_full_upsert_publishes_exact_google_readback_not_preexisting_local_csv(
         published = list(csv.DictReader(handle, delimiter=";"))
     assert len(published) == 1
     assert published[0]["Ticker"] == "EUNL.DE"
-    assert published[0]["Name"] == "NAME_FROM_GOOGLE_SHEETS"
-    assert published[0]["Name"] != local_df.iloc[0]["Name"]
+    assert published[0]["Name"] == "NAME_FROM_LOCAL_CALCULATION"
+    assert published[0]["Name"] == local_df.iloc[0]["Name"]
     assert published[0]["Name"] == drive_row[checker.HEADERS.index("Name")]
     assert not list(tmp_path.glob(f"{checker.OUTPUT_CSV}.staged.*.tmp"))
 

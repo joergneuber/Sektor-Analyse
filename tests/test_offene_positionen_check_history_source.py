@@ -1786,6 +1786,8 @@ def test_upsert_handles_timestamp_result_without_rolling_back_verified_tab1(
             "Ausstiegsdatum": "02.02.2026",
             "Ausstiegskurs": str(101 + number),
             "Status": "Verkauft",
+            "Richtung": "Long",
+            "Performance_Seit_Einstieg%": round((101 + number - (100 + number)) / (100 + number) * 100, 2),
         })
         archive_rows.append(row)
 
@@ -1867,6 +1869,12 @@ def test_upsert_handles_timestamp_result_without_rolling_back_verified_tab1(
     monkeypatch.setattr(checker, "read_existing_history", lambda *args, **kwargs: preflight_rows)
     monkeypatch.setattr(checker, "_snapshot_google_sheet", lambda *args, **kwargs: "backup-id")
     monkeypatch.setattr(checker, "_write_sheet", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        checker, "_verify_open_tab_full_content",
+        lambda *args, **kwargs: [["Offene Positionen+Check | Stand"], checker.HEADERS],
+    )
+    monkeypatch.setattr(checker, "_verify_tabs_after_cleanup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(checker, "_verify_history_full_content", lambda *args, **kwargs: [])
     monkeypatch.setattr(checker, "_append_missing_history_rows", lambda *args, **kwargs: appended_history)
     monkeypatch.setattr(checker, "_sort_and_number_closed_history", lambda *args, **kwargs: len(archive_rows))
     monkeypatch.setattr(
@@ -1925,7 +1933,12 @@ def test_upsert_handles_timestamp_result_without_rolling_back_verified_tab1(
         assert len(state["finalize_calls"]) == (1 if is_new_master else 0)
 
     assert state["enforce_called"] is True
-    assert history_rows == history_snapshot
+    # Only the intended A1 timestamp may change; every archived data cell stays intact.
+    assert history_rows[1:] == history_snapshot[1:]
+    if timestamp_fails:
+        assert history_rows[0] == history_snapshot[0]
+    else:
+        assert history_rows[0][0] == state["a1"]
     if not timestamp_fails:
         assert len(state["updates"]) == 1
         assert state["updates"][0]["range"] == "'Geschlossene Positionen'!A1"
@@ -2004,6 +2017,12 @@ def test_upsert_stages_drive_readback_until_all_google_checks_pass(
     monkeypatch.setattr(checker, "read_existing_history", lambda *args, **kwargs: history_rows)
     monkeypatch.setattr(checker, "_snapshot_google_sheet", lambda *args, **kwargs: "backup-id")
     monkeypatch.setattr(checker, "_write_sheet", lambda *args, **kwargs: None)
+    def _fake_full_open_verification(*args, **kwargs):
+        state["open_read_range"] = "'Offene Positionen+Check'!A:ZZZ"
+        return open_rows
+    monkeypatch.setattr(checker, "_verify_open_tab_full_content", _fake_full_open_verification)
+    monkeypatch.setattr(checker, "_verify_tabs_after_cleanup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(checker, "_verify_history_full_content", lambda *args, **kwargs: [])
     monkeypatch.setattr(checker, "_append_missing_history_rows", lambda *args, **kwargs: 0)
     monkeypatch.setattr(checker, "_sort_and_number_closed_history", lambda *args, **kwargs: len(archive_rows))
     monkeypatch.setattr(checker, "_align_history_date_columns", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulierter Formatierungsfehler")))
