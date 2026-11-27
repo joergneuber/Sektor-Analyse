@@ -383,7 +383,7 @@ jobs:
           NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
           NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
           NMM_USE_HISTORICAL_OHLCV: "1"
-        run: python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv
+        run: python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv --refresh-current-session-gaps
 
       # ============================================================
       # OFFENE POSITIONEN + TECHNISCHER CHECK
@@ -400,6 +400,8 @@ jobs:
 
       # Nach dem Provider-Fallback muessen alle offenen Positionen mit einer
       # aktuellen, vom Quality Gate freigegebenen Historie in SQLite vorliegen.
+      # Nur transiente fehlende Handelssitzungen werden gezielt nachgeladen.
+      # Strukturelle Quality-Fehler bleiben sichtbar und werden nicht umgangen.
       - name: Offene OHLCV-Historien abschliessend qualitaetspruefen
         id: ohlcv-pre-scan-position-verify
         continue-on-error: true
@@ -407,7 +409,36 @@ jobs:
           NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
           NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
           NMM_USE_HISTORICAL_OHLCV: "1"
-        run: python historical_ohlcv.py verify-open-positions --positions-file Offene_Positionen.csv
+        run: |
+          set +e
+          positions_rc=1
+          for attempt in 1 2 3; do
+            verify_output="$(python historical_ohlcv.py verify-open-positions --positions-file Offene_Positionen.csv 2>&1)"
+            positions_rc=$?
+            printf '%s\n' "$verify_output"
+            if [ "$positions_rc" -eq 0 ]; then
+              break
+            fi
+            # Nur fehlende/verspaetete Historien loesen einen Retry aus.
+            # INVALID-/Quality-Gate-Befunde werden nicht durch Wiederholungen
+            # oder eine gelockerte Pruefung verdeckt.
+            if [ "$attempt" -ge 3 ] || ! printf '%s\n' "$verify_output" | grep -Eq 'STALE_HISTORY:|NO_STORED_BARS'; then
+              break
+            fi
+            echo "OHLCV_PRE_SCAN_POSITION_RETRY=${attempt}/3 | gezielter Refresh in 45 Sekunden"
+            sleep 45
+            sync_output="$(python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv --refresh-current-session-gaps 2>&1)"
+            sync_rc=$?
+            printf '%s\n' "$sync_output"
+            if [ "$sync_rc" -ne 0 ]; then
+              echo "::warning::Gezielter OHLCV-Refresh lieferte Exitcode ${sync_rc}; Positionspruefung bleibt massgeblich."
+            fi
+            if ! printf '%s\n' "$sync_output" | grep -Eq 'HIST-OHLCV-SESSION-REFRESH: requested=[0-9]+ stale=[1-9][0-9]*'; then
+              echo "OHLCV_PRE_SCAN_POSITION_RETRY=STOP | keine nachgewiesene aktuelle Session-Luecke fuer einen weiteren Versuch"
+              break
+            fi
+          done
+          exit "$positions_rc"
 
       # Live-Benchmark gegen iShares Core MSCI World (EUNL.DE),
       # Stichtag 07.08.2026. Kein Backtest: verarbeitet offene Positionen
@@ -1171,6 +1202,7 @@ jobs:
       - name: Neue Trading-Radar technisch gültig und frisch verifizieren
         id: trading-radar-report-check
         if: always()
+        continue-on-error: true
         env:
           TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
           TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
@@ -1179,6 +1211,17 @@ jobs:
           TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
         run: |
           set -euo pipefail
+          # Jeder fehlgeschlagene Report-Check muss fachlich NICHT_FINAL
+          # ausgeben – auch bei Fehlern vor dem eigentlichen Report-Gate.
+          report_check_exit() {
+            local rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ]; then
+              echo "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" >> "$GITHUB_OUTPUT"
+            fi
+            exit "$rc"
+          }
+          trap report_check_exit EXIT
           if [ "${TRADING_RADAR_CONTRACT_OUTCOME:-}" != "success" ]; then
             echo "REPORT_CHECK=FAIL | Trading-Radar-Datenvertrag-Vorprüfung fehlgeschlagen (Outcome=${TRADING_RADAR_CONTRACT_OUTCOME:-missing}); Verifikation abgebrochen; kein Gemini-Fehler diagnostiziert."
             exit 1
@@ -1204,7 +1247,13 @@ jobs:
           # stehen lassen. Erst nach erfolgreicher Gate-Pruefung bleibt FINAL moeglich.
           if ! python trading_radar_report_gate.py "$TRADING_RADAR_DATEI"; then
             sed -i 's/^TRADING_RADAR_FACHLICH_FINAL=FINAL$/TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL/' "$TRADING_RADAR_DATEI"
-            echo "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" >> "$GITHUB_OUTPUT"
+            report_status_count=$(grep -Ec '^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)$' "$TRADING_RADAR_DATEI" || true)
+            if [ "$report_status_count" -ne 1 ] || ! grep -qx 'TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL' "$TRADING_RADAR_DATEI"; then
+              echo "REPORT_CHECK=FAIL | Gate fehlgeschlagen und Berichtstatus nicht eindeutig auf NICHT_FINAL herstellbar."
+              exit 1
+            fi
+            echo "TRADING_RADAR_REPORT_MAIL_ELIGIBLE=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Trading-Radar bleibt NICHT_FINAL; Report-Gate fehlgeschlagen. Keine regulaere Drive-Freigabe."
             echo "REPORT_CHECK=FAIL | Bericht auf NICHT_FINAL herabgestuft; keine regulaere Freigabe."
             exit 1
           fi
@@ -1219,6 +1268,7 @@ jobs:
             exit 1
           fi
           echo "TRADING_RADAR_FACHLICH_FINAL=$report_status" >> "$GITHUB_OUTPUT"
+          echo "TRADING_RADAR_REPORT_MAIL_ELIGIBLE=true" >> "$GITHUB_OUTPUT"
           echo "REPORT_CHECK=PASS | frischer Bericht, acht Abschnitte und eindeutiger Status=$report_status"
 
       # Das Gate-Ergebnis wird erst nach dem Report-Check in den End-Snapshot
@@ -1233,7 +1283,7 @@ jobs:
           TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate || 'NOT_RUN' }}
           TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate || 'NOT_RUN' }}
           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || steps.trading-radar.outputs.fachlich_final || 'NICHT_FINAL' }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || 'NICHT_FINAL' }}
         run: python trading_radar_run_evidence.py gate-result
 
       - name: Trading-Radar Evidence final validieren
@@ -1246,7 +1296,7 @@ jobs:
           TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate || 'NOT_RUN' }}
           TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate || 'NOT_RUN' }}
           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || steps.trading-radar.outputs.fachlich_final || 'NICHT_FINAL' }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || 'NICHT_FINAL' }}
         run: python trading_radar_run_evidence.py validate-final
 
       - name: Trading-Radar Laufnachweis als Artifact sichern
@@ -1318,7 +1368,7 @@ jobs:
         # FINAL wird nur nach bestandenem Report-Gate regulär versendet.
         # Ein technisch erzeugter NICHT_FINAL-Bericht wird trotzdem zugestellt,
         # damit Fehler sichtbar sind; er bleibt klar als nicht freigegeben markiert.
-        if: ${{ always() && steps.trading-radar.outcome == 'success' && steps.trading-radar.outputs.status == 'SUCCESS' && (steps.trading-radar.outputs.fachlich_final == 'FINAL' || steps.trading-radar.outputs.fachlich_final == 'NICHT_FINAL') && env.CHATGPT_FALLBACK_ERZEUGT != 'true' && (steps.trading-radar.outputs.fachlich_final == 'NICHT_FINAL' || steps.trading-radar-report-check.outcome == 'success') }}
+        if: ${{ always() && steps.trading-radar.outcome == 'success' && steps.trading-radar.outputs.status == 'SUCCESS' && steps.trading-radar-report-check.outputs.TRADING_RADAR_REPORT_MAIL_ELIGIBLE == 'true' && (steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL == 'FINAL' || steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL == 'NICHT_FINAL') && env.CHATGPT_FALLBACK_ERZEUGT != 'true' }}
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -1326,7 +1376,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
           TRADING_RADAR_STATUS: ${{ steps.trading-radar.outputs.status }}
-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar.outputs.fachlich_final }}
+          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || 'NICHT_FINAL' }}
           TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
           TRADING_RADAR_REPORT_CHECK_OUTCOME: ${{ steps.trading-radar-report-check.outcome }}
         run: python send_mail.py
