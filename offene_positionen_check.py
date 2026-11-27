@@ -35,6 +35,7 @@ import sys
 import re
 import ast
 import time
+import tempfile
 import requests
 from collections import Counter
 from dataclasses import dataclass
@@ -3261,6 +3262,82 @@ def _quarantine_finalized_new_master(drive, spreadsheet_id: str, init_name: str)
     )
 
 
+def _stage_verified_open_tab_csv(
+    verify_rows: list[list], spreadsheet_id: str, output_path: Optional[str] = None
+) -> tuple[str, str, int]:
+    """Stage the local consumer CSV from verified Drive read-back without publishing it."""
+    expected_header = [str(value).strip() for value in HEADERS]
+    if len(verify_rows) < 2:
+        raise RuntimeError("Drive-Read-back für Offene Positionen+Check enthält keinen Header.")
+    actual_header = [str(value).strip() for value in verify_rows[1]]
+    if actual_header != expected_header:
+        raise RuntimeError("Drive-Read-back für Offene Positionen+Check besitzt einen unerwarteten Header.")
+
+    normalized_rows = []
+    ticker_index = expected_header.index("Ticker")
+    status_index = expected_header.index("Status")
+    for row_number, raw in enumerate(verify_rows[2:], start=3):
+        if not any(value is not None and str(value).strip() for value in raw):
+            continue
+        extra_values = raw[len(expected_header):]
+        if any(value is not None and str(value).strip() for value in extra_values):
+            raise RuntimeError(
+                f"Drive-Read-back enthält in Zeile {row_number} nichtleere Werte "
+                "außerhalb des erwarteten Headers."
+            )
+        row = ["" if value is None else str(value) for value in raw[:len(expected_header)]]
+        row.extend([""] * (len(expected_header) - len(row)))
+        if not str(row[ticker_index]).strip():
+            raise RuntimeError("Drive-Read-back enthält eine offene Zeile ohne Ticker.")
+        if str(row[status_index]).strip().casefold() != "offen":
+            raise RuntimeError("Drive-Read-back enthält im offenen Tab einen nicht offenen Status.")
+        normalized_rows.append(row)
+
+    target = output_path or os.path.join(os.getcwd(), OUTPUT_CSV)
+    target_dir = os.path.dirname(os.path.abspath(target))
+    os.makedirs(target_dir, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=os.path.basename(target) + ".staged.",
+        suffix=".tmp",
+        dir=target_dir,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle, delimiter=";")
+            writer.writerow(expected_header)
+            writer.writerows(normalized_rows)
+
+        # Verify the staged artifact before any publication of the consumer CSV.
+        with open(temporary, "r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.reader(handle, delimiter=";"))
+        if not rows or rows[0] != expected_header or rows[1:] != normalized_rows:
+            raise RuntimeError("Lokaler Positions-CSV-Export stimmt nicht exakt mit dem Drive-Read-back überein.")
+    except Exception:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        raise
+
+    print(
+        "TRADING_RADAR_OPEN_TAB_DRIVE_READBACK=STAGED | "
+        f"drive_file_id={spreadsheet_id} | file={os.path.basename(target)} | rows={len(normalized_rows)}"
+    )
+    return temporary, target, len(normalized_rows)
+
+
+def _publish_staged_open_tab_csv(temporary: str, target: str) -> None:
+    """Atomically publish a staged Drive-derived CSV after all Google rollback gates passed."""
+    try:
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
+
+
 def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Optional[str]:
     if creds is None:
         print("INFO: Keine Google-Credentials – lokale CSVs bleiben die Ausgabe.")
@@ -3348,6 +3425,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     backup_tab_title = None
     swapped = False
     timestamp_update_failed = False
+    staged_open_csv = None
 
     try:
         if existing and not is_new_master:
@@ -3456,7 +3534,10 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         # 5) Produktiven Tab 1 direkt nach dem Swap prüfen.
         verify_ss = sheets.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
-            range=f"Offene Positionen+Check!A1:{_column_letter(len(HEADERS))}",
+            # Read the entire available sheet width. Limiting the request to
+            # len(HEADERS) made the extra-column guard below ineffective because
+            # Google could never return values beyond the expected schema.
+            range="'Offene Positionen+Check'!A:ZZZ",
         ).execute()
         verify_rows = verify_ss.get("values", [])
         if len(verify_rows) < 2:
@@ -3514,6 +3595,9 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
             f"DATENSCHUTZ: Produktivstand verifiziert | offene={len(verify_data)} | "
             f"historisch={max(0, len(hist_rows)-2)}"
         )
+        # Stage the consumer CSV now, but do not publish it until every
+        # remaining Google check and rollback-capable operation has succeeded.
+        staged_open_csv = _stage_verified_open_tab_csv(verify_rows, spreadsheet_id)
 
         # 6) Verbindliche Reihenfolge der beiden produktiven Tabellenreiter herstellen
         #    und unmittelbar danach verifizieren. Die Sheet-Inhalte/IDs bleiben erhalten.
@@ -3560,13 +3644,12 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         # 8) Sicherungen bleiben dauerhaft erhalten; keine automatische Löschung.
         print("DATENSCHUTZ: Produktiv- und Drive-Backups bleiben dauerhaft erhalten.")
 
-        print(
-            f"GOOGLE SHEET AKTUALISIERT: {DRIVE_NAME} | offene={len(df)} | "
-            f"historisch={max(0, len(hist_rows)-2)} | 2 produktive Tabs (Tab2 APPEND-ONLY)"
-        )
-        return spreadsheet_id
-
     except Exception as exc:
+        if staged_open_csv:
+            try:
+                os.remove(staged_open_csv[0])
+            except OSError:
+                pass
         # Ein reiner A1-Metadatenfehler kommt NACH erfolgreicher Tab-1-Verifikation.
         # In diesem Sonderfall würde ein Rollback Tab 1 unnötig hinter den bereits
         # append-only aktualisierten Tab 2 zurücksetzen.
@@ -3588,6 +3671,29 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                 f"Der verifizierte Tab-1-Stand wurde nicht zurückgerollt: {exc}"
             ) from exc
         raise RuntimeError(f"Google-Upload sicher abgebrochen: {exc}") from exc
+
+    # Reaching this point means all Sheets/Drive checks, timestamp handling,
+    # master finalization and rollback-capable operations completed successfully.
+    if staged_open_csv:
+        temporary, target, exported_rows = staged_open_csv
+        try:
+            _publish_staged_open_tab_csv(temporary, target)
+        except Exception as publish_exc:
+            raise RuntimeError(
+                "Google-Sheet wurde erfolgreich verifiziert, aber die lokale "
+                f"Drive-Readback-CSV konnte nicht atomar veröffentlicht werden: {publish_exc}"
+            ) from publish_exc
+        print(
+            "TRADING_RADAR_OPEN_TAB_DRIVE_READBACK=AVAILABLE | "
+            f"drive_file_id={spreadsheet_id} | file={os.path.basename(target)} | rows={exported_rows}"
+        )
+
+    print(
+        f"GOOGLE SHEET AKTUALISIERT: {DRIVE_NAME} | offene={len(df)} | "
+        f"historisch={max(0, len(hist_rows)-2)} | 2 produktive Tabs (Tab2 APPEND-ONLY)"
+    )
+    return spreadsheet_id
+
 
 def _position_key(row) -> tuple:
     """Eindeutiger Positionsschlüssel für das sichere Entfernen geschlossener Trades."""
@@ -5141,11 +5247,23 @@ def main():
     drive_source_sync_attempted = False
     drive_source_sync_completed = False
     closed_source_sync_state = {"attempted": False, "completed": False}
+    calculation_output_stage = None
     try:
         creds = google_credentials()
         drive_baseline = _load_drive_source_baseline(INPUT_FILE)
         _verify_drive_source_baseline(creds, drive_baseline)
-        output, closed_history = run_local(INPUT_FILE, OUTPUT_CSV)
+
+        # run_local() must never overwrite the consumer-facing CSV: that file
+        # is reserved for the verified Google Sheets readback published by
+        # upsert_google_sheet(). Keep the calculation artifact beside the
+        # destination so any later os.replace remains on the same filesystem.
+        output_dir = os.path.dirname(os.path.abspath(OUTPUT_CSV))
+        output_prefix = f".{os.path.basename(OUTPUT_CSV)}.calculation."
+        stage_fd, calculation_output_stage = tempfile.mkstemp(
+            prefix=output_prefix, suffix=".tmp", dir=output_dir
+        )
+        os.close(stage_fd)
+        output, closed_history = run_local(INPUT_FILE, calculation_output_stage)
         source_backfill_rows = backfill_missing_market_data_to_source(
             INPUT_FILE, output, snapshot_path=source_snapshot
         )
@@ -5183,6 +5301,16 @@ def main():
                 "in Offene_Positionen bestätigt."
             )
     except Exception as exc:
+        # The calculation artifact is disposable and must never be mistaken
+        # for the verified Google readback CSV.
+        if calculation_output_stage and os.path.exists(calculation_output_stage):
+            try:
+                os.remove(calculation_output_stage)
+            except OSError as cleanup_exc:
+                print(
+                    "WARNUNG: lokale Berechnungs-Stagingdatei konnte nicht entfernt "
+                    f"werden: {calculation_output_stage} | {cleanup_exc}"
+                )
         # Preserve the state even if _remove_closed_from_source raises during Drive sync.
         drive_source_sync_attempted = (
             drive_source_sync_attempted or bool(closed_source_sync_state["attempted"])
@@ -5263,6 +5391,18 @@ def main():
             f"TRANSAKTIONSGRENZE-Meldungen beurteilt werden. Ursache: {exc}"
         ) from exc
     else:
+        # The calculation CSV is never the consumer output. After the verified
+        # Google readback has been published by upsert_google_sheet(), discard
+        # the temporary local calculation artifact.
+        if calculation_output_stage and os.path.exists(calculation_output_stage):
+            try:
+                os.remove(calculation_output_stage)
+            except OSError as cleanup_exc:
+                print(
+                    "WARNUNG: lokale Berechnungs-Stagingdatei konnte nach "
+                    "erfolgreichem Google-Readback nicht entfernt werden: "
+                    f"{calculation_output_stage} | {cleanup_exc}"
+                )
         # The recovery point is discarded only after all requested operations
         # returned successfully. A cleanup failure is logged, not fatal.
         _discard_source_file_snapshot(source_snapshot)
