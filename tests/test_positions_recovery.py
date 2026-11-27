@@ -9,12 +9,12 @@ sys.modules.setdefault("yfinance", types.ModuleType("yfinance"))
 import pandas as pd
 import pytest
 
+import scripts.restore_positions as recovery
 from scripts.restore_positions import (
     OPEN_SOURCE_PATH,
     load_recovery_manifest,
     plan_history_recovery,
     validate_open_recovery_source,
-    _run_local_with_staged_output,
 )
 import offene_positionen_check as opc
 
@@ -1018,7 +1018,10 @@ def test_recovery_local_calculation_uses_temp_file_and_preserves_consumer_csv(
     target = tmp_path / "Offene Positionen+Check.csv"
     original = b"PREVIOUS_VERIFIED_READBACK\n"
     target.write_bytes(original)
-    monkeypatch.setattr(opc, "OUTPUT_CSV", str(target))
+    # Patch the exact module object captured by restore_positions. The
+    # lifecycle tests load a fresh offene_positionen_check module object under
+    # the same sys.modules key, so a separate alias can point at another object.
+    monkeypatch.setattr(recovery.opc, "OUTPUT_CSV", str(target))
     observed = {}
 
     def fake_run_local(input_file, output_csv):
@@ -1030,8 +1033,8 @@ def test_recovery_local_calculation_uses_temp_file_and_preserves_consumer_csv(
         assert target.read_bytes() == original
         return "calculated-frame", "history-frame"
 
-    monkeypatch.setattr(opc, "run_local", fake_run_local)
-    result = _run_local_with_staged_output("Offene_Positionen.csv")
+    monkeypatch.setattr(recovery.opc, "run_local", fake_run_local)
+    result = recovery._run_local_with_staged_output("Offene_Positionen.csv")
 
     assert result == ("calculated-frame", "history-frame")
     assert observed["input_file"] == "Offene_Positionen.csv"
@@ -1048,7 +1051,9 @@ def test_recovery_local_calculation_failure_preserves_consumer_csv_and_cleans_st
     target = tmp_path / "Offene Positionen+Check.csv"
     original = b"PREVIOUS_VERIFIED_READBACK\n"
     target.write_bytes(original)
-    monkeypatch.setattr(opc, "OUTPUT_CSV", str(target))
+    # Keep the monkeypatch anchored to restore_positions' imported module
+    # object, not the separately imported alias replaced by lifecycle tests.
+    monkeypatch.setattr(recovery.opc, "OUTPUT_CSV", str(target))
     observed = {}
 
     def failing_run_local(input_file, output_csv):
@@ -1057,9 +1062,9 @@ def test_recovery_local_calculation_failure_preserves_consumer_csv_and_cleans_st
             handle.write(b"PARTIAL_LOCAL_CALCULATION\n")
         raise RuntimeError("simulierter Recovery-Berechnungsfehler")
 
-    monkeypatch.setattr(opc, "run_local", failing_run_local)
+    monkeypatch.setattr(recovery.opc, "run_local", failing_run_local)
     with pytest.raises(RuntimeError, match="Recovery-Berechnungsfehler"):
-        _run_local_with_staged_output("Offene_Positionen.csv")
+        recovery._run_local_with_staged_output("Offene_Positionen.csv")
 
     assert target.read_bytes() == original
     assert not __import__("os").path.exists(observed["output_csv"])
