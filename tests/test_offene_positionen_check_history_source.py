@@ -1,3 +1,4 @@
+import csv
 import sys
 import types
 
@@ -1826,7 +1827,7 @@ def test_upsert_handles_timestamp_result_without_rolling_back_verified_tab1(
                 return Request({"values": [[state["a1"]]]})
             if requested_range in {"Geschlossene Positionen!A1:Z", "Geschlossene Positionen!A1:AA"}:
                 return Request({"values": history_rows})
-            if requested_range.startswith("Offene Positionen+Check!A1:"):
+            if requested_range == "'Offene Positionen+Check'!A:ZZZ":
                 return Request({"values": [["Offene Positionen+Check | Stand"], checker.HEADERS]})
             raise AssertionError(f"Unerwarteter Google-Sheets-Read: {requested_range}")
 
@@ -1932,12 +1933,24 @@ def test_upsert_handles_timestamp_result_without_rolling_back_verified_tab1(
         assert state["updates"][0]["valueInputOption"] == "RAW"
 
 
-@pytest.mark.parametrize("history_integrity_fails", [False, True], ids=["historie-valide", "historie-inkonsistent"])
-def test_upsert_continues_after_history_formatting_failure_but_keeps_integrity_gate(
-    monkeypatch, tmp_path, history_integrity_fails
+@pytest.mark.parametrize(
+    "history_integrity_fails,tab_order_fails,extra_column_fails",
+    [
+        (False, False, False),
+        (False, True, False),
+        (False, False, True),
+        (True, False, False),
+    ],
+    ids=["erfolg", "tab-reihenfolge-fehler", "unerwartete-zusatzspalte", "historie-inkonsistent"],
+)
+def test_upsert_stages_drive_readback_until_all_google_checks_pass(
+    monkeypatch, tmp_path, history_integrity_fails, tab_order_fails, extra_column_fails
 ):
-    """Formatierungsfehler sind nicht fatal; ein anschließender Integritätsfehler bleibt fatal."""
-    state = {"history_reads": 0, "swap_calls": 0, "rollback_calls": 0}
+    """Drive-Readback liest volle Sheet-Breite und publiziert CSV erst nach den finalen Gates."""
+    state = {
+        "history_reads": 0, "swap_calls": 0, "rollback_calls": 0,
+        "open_read_range": None, "tab_order_calls": 0,
+    }
     archive_rows = []
     for number in range(checker.MINIMUM_PROTECTED_HISTORY_ROWS):
         row = {column: "" for column in checker.HISTORY_HEADERS}
@@ -1950,6 +1963,14 @@ def test_upsert_continues_after_history_formatting_failure_but_keeps_integrity_g
     history_rows.extend([row[column] for column in checker.HISTORY_HEADERS] + [i + 1]
                         for i, row in enumerate(archive_rows))
 
+    open_row = [""] * len(checker.HEADERS)
+    open_row[checker.HEADERS.index("Ticker")] = "AAA"
+    open_row[checker.HEADERS.index("Status")] = "Offen"
+    open_row[checker.HEADERS.index("Richtung")] = "Long"
+    open_rows = [["Offene Positionen+Check | Stand"], list(checker.HEADERS), open_row.copy()]
+    if extra_column_fails:
+        open_rows[2].append("UNEXPECTED_DATA")
+
     class Request:
         def __init__(self, result=None): self.result = result or {}
         def execute(self): return self.result
@@ -1961,8 +1982,9 @@ def test_upsert_continues_after_history_formatting_failure_but_keeps_integrity_g
                 rows = [list(row) for row in history_rows]
                 if history_integrity_fails: rows[1] = ["FALSCHER_HEADER"]
                 return Request({"values": rows})
-            if requested_range.startswith("Offene Positionen+Check!A1:"):
-                return Request({"values": [["Offene Positionen+Check | Stand"], checker.HEADERS]})
+            if requested_range == "'Offene Positionen+Check'!A:ZZZ":
+                state["open_read_range"] = requested_range
+                return Request({"values": [list(row) for row in open_rows]})
             raise AssertionError(f"Unerwarteter Google-Sheets-Read: {requested_range}")
     class SpreadsheetResource:
         def get(self, **kwargs):
@@ -1990,24 +2012,52 @@ def test_upsert_continues_after_history_formatting_failure_but_keeps_integrity_g
         return {"Offene Positionen+Check": "__BACKUP_OFFEN__"}
     monkeypatch.setattr(checker, "_swap_temp_tabs", swap)
     monkeypatch.setattr(checker, "_rollback_productive_swap", lambda *args, **kwargs: state.__setitem__("rollback_calls", state["rollback_calls"] + 1))
-    monkeypatch.setattr(checker, "_enforce_productive_tab_order", lambda *args, **kwargs: None)
+    def enforce(*args, **kwargs):
+        state["tab_order_calls"] += 1
+        if tab_order_fails:
+            raise RuntimeError("simulierter Tab-Reihenfolgefehler")
+    monkeypatch.setattr(checker, "_enforce_productive_tab_order", enforce)
     monkeypatch.setattr(checker, "_update_closed_history_timestamp", lambda *args, **kwargs: None)
     monkeypatch.setattr(checker, "_finalize_new_master", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)
 
+    target = tmp_path / checker.OUTPUT_CSV
+    target.write_text("KEEP;OLD;LOCAL\n", encoding="utf-8")
+    open_df = pd.DataFrame([open_row], columns=checker.HEADERS)
+    closed_df = pd.DataFrame(columns=checker.HISTORY_HEADERS)
+
     if history_integrity_fails:
         with pytest.raises(RuntimeError, match="Header der Historie stimmt nicht"):
-            checker.upsert_google_sheet(pd.DataFrame(columns=checker.HEADERS),
-                                        pd.DataFrame(columns=checker.HISTORY_HEADERS), creds=object())
-        assert state["history_reads"] == 1
-        assert state["swap_calls"] == 0
+            checker.upsert_google_sheet(open_df, closed_df, creds=object())
+    elif tab_order_fails:
+        with pytest.raises(RuntimeError, match="Tab-Reihenfolgefehler"):
+            checker.upsert_google_sheet(open_df, closed_df, creds=object())
+    elif extra_column_fails:
+        with pytest.raises(RuntimeError, match="außerhalb des erwarteten Headers"):
+            checker.upsert_google_sheet(open_df, closed_df, creds=object())
     else:
-        result = checker.upsert_google_sheet(pd.DataFrame(columns=checker.HEADERS),
-                                             pd.DataFrame(columns=checker.HISTORY_HEADERS), creds=object())
+        result = checker.upsert_google_sheet(open_df, closed_df, creds=object())
         assert result == "spreadsheet-id"
-        assert state["history_reads"] == 1
+
+    assert state["history_reads"] == 1
+    if history_integrity_fails:
+        assert state["swap_calls"] == 0
+        assert state["open_read_range"] is None
+        assert target.read_text(encoding="utf-8") == "KEEP;OLD;LOCAL\n"
+    else:
         assert state["swap_calls"] == 1
-    assert state["rollback_calls"] == 0
+        assert state["open_read_range"] == "'Offene Positionen+Check'!A:ZZZ"
+        if tab_order_fails or extra_column_fails:
+            assert state["rollback_calls"] == 1
+            assert target.read_text(encoding="utf-8") == "KEEP;OLD;LOCAL\n"
+            assert not list(tmp_path.glob(checker.OUTPUT_CSV + ".staged.*.tmp"))
+        else:
+            assert state["rollback_calls"] == 0
+            with open(target, "r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.reader(handle, delimiter=";"))
+            assert rows[0] == checker.HEADERS
+            assert rows[1][checker.HEADERS.index("Ticker")] == "AAA"
+    assert state["tab_order_calls"] == (0 if history_integrity_fails or extra_column_fails else 1)
 
 
 def test_closed_history_timestamp_restores_previous_a1_when_readback_mismatches(monkeypatch):

@@ -14,6 +14,7 @@ from scripts.restore_positions import (
     load_recovery_manifest,
     plan_history_recovery,
     validate_open_recovery_source,
+    _run_local_with_staged_output,
 )
 import offene_positionen_check as opc
 
@@ -1008,3 +1009,58 @@ def test_open_positions_reader_rejects_duplicate_headers(tmp_path):
     )
     with pytest.raises(ValueError, match="doppelte Spaltennamen"):
         checker.read_positions(str(source))
+
+
+def test_recovery_local_calculation_uses_temp_file_and_preserves_consumer_csv(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "Offene Positionen+Check.csv"
+    original = b"PREVIOUS_VERIFIED_READBACK\n"
+    target.write_bytes(original)
+    monkeypatch.setattr(opc, "OUTPUT_CSV", str(target))
+    observed = {}
+
+    def fake_run_local(input_file, output_csv):
+        observed["input_file"] = input_file
+        observed["output_csv"] = output_csv
+        assert output_csv != str(target)
+        with open(output_csv, "wb") as handle:
+            handle.write(b"LOCAL_RECOVERY_CALCULATION\n")
+        assert target.read_bytes() == original
+        return "calculated-frame", "history-frame"
+
+    monkeypatch.setattr(opc, "run_local", fake_run_local)
+    result = _run_local_with_staged_output("Offene_Positionen.csv")
+
+    assert result == ("calculated-frame", "history-frame")
+    assert observed["input_file"] == "Offene_Positionen.csv"
+    assert observed["output_csv"] != str(target)
+    assert target.read_bytes() == original
+    assert not __import__("os").path.exists(observed["output_csv"])
+    assert not list(tmp_path.glob(".Offene Positionen+Check.csv.recovery-calculation.*.tmp"))
+
+
+def test_recovery_local_calculation_failure_preserves_consumer_csv_and_cleans_stage(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "Offene Positionen+Check.csv"
+    original = b"PREVIOUS_VERIFIED_READBACK\n"
+    target.write_bytes(original)
+    monkeypatch.setattr(opc, "OUTPUT_CSV", str(target))
+    observed = {}
+
+    def failing_run_local(input_file, output_csv):
+        observed["output_csv"] = output_csv
+        with open(output_csv, "wb") as handle:
+            handle.write(b"PARTIAL_LOCAL_CALCULATION\n")
+        raise RuntimeError("simulierter Recovery-Berechnungsfehler")
+
+    monkeypatch.setattr(opc, "run_local", failing_run_local)
+    with pytest.raises(RuntimeError, match="Recovery-Berechnungsfehler"):
+        _run_local_with_staged_output("Offene_Positionen.csv")
+
+    assert target.read_bytes() == original
+    assert not __import__("os").path.exists(observed["output_csv"])
+    assert not list(tmp_path.glob(".Offene Positionen+Check.csv.recovery-calculation.*.tmp"))
