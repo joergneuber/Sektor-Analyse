@@ -1324,6 +1324,132 @@ def test_sync_open_positions_registers_and_bootstraps_only_open_tickers(tmp_path
     assert "CLOSED.DE" not in payload["tickers"]
 
 
+def test_sync_open_positions_refreshes_only_open_tickers_missing_last_completed_session(tmp_path, monkeypatch):
+    import csv
+    import sqlite3
+    import historical_ohlcv as ho
+
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"AAA.DE":"Basis", "BBB.DE":"Basis"}\n', encoding="utf-8")
+    positions = tmp_path / "Offene_Positionen.csv"
+    with positions.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Ticker", "Status"], delimiter=";")
+        writer.writeheader()
+        writer.writerow({"Ticker": "AAA.DE", "Status": "Offen"})
+
+    db = tmp_path / "historical_ohlcv.sqlite"
+    dynamic = tmp_path / "historical_ohlcv_universe.json"
+    ho.init_db(db)
+    old_index = pd.bdate_range("2026-09-01", "2026-11-26")
+    old_frame = pd.DataFrame({
+        "Open": [100.0] * len(old_index), "High": [102.0] * len(old_index),
+        "Low": [99.0] * len(old_index), "Close": [101.0] * len(old_index),
+        "Adj Close": [101.0] * len(old_index), "Volume": [1000.0] * len(old_index),
+    }, index=old_index)
+    with sqlite3.connect(db) as conn:
+        ho._upsert_frames(conn, {"AAA.DE": old_frame})
+
+    refreshed_index = old_index.append(pd.DatetimeIndex(["2026-11-27"]))
+    refreshed_frame = pd.DataFrame({
+        "Open": [100.0] * len(refreshed_index), "High": [102.0] * len(refreshed_index),
+        "Low": [99.0] * len(refreshed_index), "Close": [101.5] * len(refreshed_index),
+        "Adj Close": [101.5] * len(refreshed_index), "Volume": [1000.0] * len(refreshed_index),
+    }, index=refreshed_index)
+    calls = []
+
+    def fake_download(tickers, start=None, end=None):
+        calls.append((list(tickers), start, end))
+        return {ticker: refreshed_frame.copy() for ticker in tickers}
+
+    import ohlcv_quality_gate as qg
+    monkeypatch.setattr(ho, "_download_batch", fake_download)
+    monkeypatch.setattr(qg, "_last_completed_session_date", lambda ticker: "2026-11-27")
+    monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
+
+    stats = ho.sync_open_positions(
+        db, source, dynamic, positions,
+        repair_gaps=False, refresh_current_session_gaps=True,
+    )
+
+    assert calls and calls[0][0] == ["AAA.DE"]
+    assert stats["updated"] == 1
+    loaded = ho.load_history("AAA.DE", db)
+    assert pd.Timestamp(loaded.index.max()).date().isoformat() == "2026-11-27"
+
+
+def test_current_session_refresh_retries_bootstrap_when_open_ticker_has_no_history(
+    tmp_path, monkeypatch, capsys
+):
+    import csv
+    import historical_ohlcv as ho
+
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"AAA.DE":"Basis"}\n', encoding="utf-8")
+    positions = tmp_path / "Offene_Positionen.csv"
+    with positions.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Ticker", "Status"], delimiter=";")
+        writer.writeheader()
+        writer.writerow({"Ticker": "AAA.DE", "Status": "Offen"})
+
+    db = tmp_path / "historical_ohlcv.sqlite"
+    dynamic = tmp_path / "historical_ohlcv_universe.json"
+    ho.init_db(db)
+    index = pd.bdate_range("2026-11-23", periods=5)
+    frame = pd.DataFrame({
+        "Open": [100.0] * len(index), "High": [102.0] * len(index),
+        "Low": [99.0] * len(index), "Close": [101.0] * len(index),
+        "Adj Close": [101.0] * len(index), "Volume": [1000.0] * len(index),
+    }, index=index)
+    calls = []
+
+    def flaky_download(tickers, start=None, end=None):
+        calls.append((list(tickers), start, end))
+        if len(calls) == 1:
+            raise RuntimeError("simulierter transienter Bootstrap-Fehler")
+        return {ticker: frame.copy() for ticker in tickers}
+
+    monkeypatch.setattr(ho, "_download_batch", flaky_download)
+    monkeypatch.setattr(ho, "REQUEST_PAUSE_SECONDS", 0)
+
+    stats = ho.sync_open_positions(
+        db, source, dynamic, positions,
+        repair_gaps=False, refresh_current_session_gaps=True,
+    )
+
+    assert calls == [( ["AAA.DE"], None, None), (["AAA.DE"], None, None)]
+    assert stats["ok"] == 1
+    assert stats["missing_after"] == 0
+    assert stats["open_tickers_without_bars"] == []
+    assert pd.Timestamp(ho.load_history("AAA.DE", db).index.max()) == index[-1]
+    output = capsys.readouterr().out
+    assert "HIST-OHLCV-SESSION-REFRESH: requested=1 stale=1 tickers=AAA.DE" in output
+
+
+def test_current_session_refresh_requires_an_explicit_ticker_scope(tmp_path):
+    import pytest
+    import historical_ohlcv as ho
+
+    source = tmp_path / "analyse.py"
+    source.write_text('sektoren_map={"AAA.DE":"Basis"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="explizit begrenzte Tickerliste"):
+        ho.update_database(
+            tmp_path / "db.sqlite", source, tmp_path / "dynamic.json",
+            refresh_current_session_gaps=True, repair_gaps=False,
+        )
+
+
+def test_current_session_refresh_cli_flag_is_limited_to_sync_command():
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "historical_ohlcv.py"), "update", "--refresh-current-session-gaps"],
+        cwd=ROOT, capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 2
+    assert "nur mit sync-open-positions erlaubt" in result.stderr
+
+
 def test_update_database_only_tickers_rejects_unregistered_symbols(tmp_path):
     import pytest
     import historical_ohlcv as ho

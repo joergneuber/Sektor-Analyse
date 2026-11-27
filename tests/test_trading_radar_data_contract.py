@@ -1092,6 +1092,14 @@ def test_final_ohlcv_sync_registers_current_positions_before_full_update():
     assert update in block
     assert block.index(register) < block.index(update)
     assert "position_sync_rc=$?" in block
+    assert "--refresh-current-session-gaps" in block
+    assert "for attempt in 1 2 3; do" in block
+    assert "OHLCV_OPEN_POSITION_REFRESH_RETRY=${attempt}/3" in block
+    assert "session_refresh_output" in block
+    assert "HIST-OHLCV-SESSION-REFRESH: requested=[0-9]+ stale=[1-9][0-9]*" in block
+    assert "sleep 45" in block
+    assert "position_sync_rc=$retry_sync_rc" in block
+    assert 'if [ "$retry_sync_rc" -ne 0 ]; then' not in block
     assert '"position_sync_exit=${position_sync_rc}"' in block
     assert 'position_sync=${position_sync_rc}' in block
     assert '[ "$position_sync_rc" -eq 0 ]' in block
