@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from positionen_sheet_upload import erstelle_sheet_upload_stream
 from positionen_datum import parse_position_date, reject_excel_date_serial_price
+from positions_drive_content import google_sheet_content_sha256, sheet_values_sha256
 from positions_drive_backups import (
     DriveBackupArchiveMutationError,
     archive_drive_backup,
@@ -2188,7 +2189,7 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id, expected_old_revis
             friere_erste_zwei_zeilen_ein(creds, neue_file_id)
             # Capture the post-upload/post-formatting revision before returning
             # control to the workflow; the next writer consumes this exact state.
-            speichere_drive_quell_baseline(service, neue_file_id, lokale_datei)
+            speichere_drive_quell_baseline(service, neue_file_id, lokale_datei, creds=creds)
             try:
                 cleanup = cleanup_expired_drive_backups(service, folder_id)
                 if cleanup["deleted_ids"]:
@@ -2245,11 +2246,13 @@ def _sha256_local_file(path):
     return digest.hexdigest()
 
 
-def speichere_drive_quell_baseline(service, file_id, lokale_datei=LOKALE_DATEI):
-    """Persistiert die Drive-Revision des gerade abgeschlossenen Tracker-Uploads.
+def speichere_drive_quell_baseline(service, file_id, lokale_datei=LOKALE_DATEI, creds=None):
+    """Persistiert Drive-Metadaten UND Zellinhalt nach Upload/Formatierung.
 
-    Die nachgelagerte offene-Positionen-Prüfung darf die Quelle nur ersetzen,
-    wenn diese konkrete Drive-Revision seit dem Tracker-Upload unverändert ist.
+    Die Drive-Version bleibt als Diagnose-/Race-Marker erhalten. Die fachliche
+    Konfliktentscheidung basiert zusätzlich auf dem Fingerprint aller Zellwerte,
+    damit eine harmlose Google-Sheets-Metadatenrevision nicht mit einer Änderung
+    der Positionsdaten verwechselt wird.
     """
     metadata = service.files().get(
         fileId=file_id,
@@ -2259,8 +2262,36 @@ def speichere_drive_quell_baseline(service, file_id, lokale_datei=LOKALE_DATEI):
         raise RuntimeError(
             'Drive-Quellrevision konnte nach dem Tracker-Upload nicht belastbar erfasst werden.'
         )
+    if creds is None:
+        raise RuntimeError('Drive-Quellrevision kann ohne Google-Credentials nicht inhaltlich verifiziert werden.')
+    # Rebuild the exact typed XLSX matrix from the local CSV and compare it
+    # with the uploaded Sheet before accepting the baseline. This closes the
+    # small window between Drive upload and baseline capture: an edit that
+    # occurs before the first baseline read must not become the new baseline.
+    upload_stream = erstelle_sheet_upload_stream(
+        lokale_datei, NUMERISCHE_SPALTEN,
+        erforderliche_spalten=("Ticker", "Einstiegsdatum", "Status"),
+    )
+    from openpyxl import load_workbook
+    workbook = load_workbook(upload_stream, data_only=False, read_only=True)
+    try:
+        worksheet = workbook["Offene_Positionen"]
+        local_values = [list(row) for row in worksheet.iter_rows(values_only=True)]
+        expected_content_sha256 = sheet_values_sha256([
+            {"title": worksheet.title, "values": local_values}
+        ])
+    finally:
+        workbook.close()
+
+    sheets_service = build('sheets', 'v4', credentials=creds)
+    remote_content_sha256 = google_sheet_content_sha256(sheets_service, file_id)
+    if remote_content_sha256 != expected_content_sha256:
+        raise RuntimeError(
+            'Drive-Quellinhalt stimmt nach dem Tracker-Upload nicht mit der '
+            'lokalen Positionsdatei überein. Baseline wird nicht freigegeben.'
+        )
     payload = {
-        'schema_version': 1,
+        'schema_version': 2,
         'file_id': str(metadata['id']),
         'name': str(metadata.get('name') or ''),
         'mime_type': str(metadata.get('mimeType') or ''),
@@ -2268,6 +2299,7 @@ def speichere_drive_quell_baseline(service, file_id, lokale_datei=LOKALE_DATEI):
         'modified_time': str(metadata['modifiedTime']),
         'md5_checksum': str(metadata.get('md5Checksum') or ''),
         'local_source_sha256': _sha256_local_file(lokale_datei),
+        'remote_content_sha256': remote_content_sha256,
     }
     directory = os.path.dirname(os.path.abspath(DRIVE_BASELINE_FILE)) or '.'
     fd, temp_path = tempfile.mkstemp(prefix='.drive_baseline_', suffix='.tmp', dir=directory)
@@ -2287,7 +2319,7 @@ def speichere_drive_quell_baseline(service, file_id, lokale_datei=LOKALE_DATEI):
                 pass
     print(
         'DRIVE-QUELLREVISION GESICHERT: '
-        f"Datei-ID={payload['file_id']} | Version={payload['version']}"
+        f"Datei-ID={payload['file_id']} | Version={payload['version']} | Zellinhalt-SHA256={payload['remote_content_sha256']}"
     )
     return payload
 
@@ -2295,8 +2327,15 @@ def speichere_drive_quell_baseline(service, file_id, lokale_datei=LOKALE_DATEI):
 def lade_drive_quell_baseline():
     with open(DRIVE_BASELINE_FILE, 'r', encoding='utf-8') as handle:
         payload = json.load(handle)
-    if not isinstance(payload, dict) or payload.get('schema_version') != 1:
-        raise RuntimeError('Drive-Quellrevision-Baseline fehlt oder hat ein ungültiges Schema.')
+    if (
+        not isinstance(payload, dict)
+        or payload.get('schema_version') != 2
+        or not re.fullmatch(r'[0-9a-f]{64}', str(payload.get('remote_content_sha256') or ''))
+    ):
+        raise RuntimeError(
+            'Drive-Quellrevision-Baseline fehlt oder hat kein gültiges Schema 2 '
+            'mit Zellinhalt-Fingerprint.'
+        )
     return payload
 
 

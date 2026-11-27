@@ -46,6 +46,7 @@ import pandas as pd
 
 from positionen_datum import parse_position_date, position_date_to_sheets_serial, reject_excel_date_serial_price
 from positions_drive_backups import archive_drive_backup, cleanup_expired_drive_backups
+from positions_drive_content import google_sheet_content_sha256
 import yfinance as yf
 from scipy.signal import argrelextrema
 
@@ -4157,11 +4158,19 @@ def _load_drive_source_baseline(source_file: str) -> dict:
             "Drive-Sicherheitsabbruch: Tracker-Remote-Baseline fehlt oder ist "
             f"unlesbar ({DRIVE_BASELINE_FILE})."
         ) from exc
-    required = {"schema_version", "file_id", "version", "modified_time", "mime_type", "local_source_sha256"}
-    if not isinstance(baseline, dict) or not required.issubset(baseline) or baseline.get("schema_version") != 1:
-        raise RuntimeError("Drive-Sicherheitsabbruch: Remote-Baseline hat ein ungültiges Schema.")
+    required = {
+        "schema_version", "file_id", "version", "modified_time", "mime_type",
+        "local_source_sha256", "remote_content_sha256",
+    }
+    if not isinstance(baseline, dict) or not required.issubset(baseline) or baseline.get("schema_version") != 2:
+        raise RuntimeError(
+            "Drive-Sicherheitsabbruch: Remote-Baseline fehlt der Zellinhalt-Fingerprint "
+            "(Schema 2). Der Positions-Tracker muss vor dem Check erfolgreich laufen."
+        )
     if not baseline.get("file_id") or baseline.get("version") in (None, "") or not baseline.get("modified_time"):
         raise RuntimeError("Drive-Sicherheitsabbruch: Remote-Baseline enthält keine belastbare Version.")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(baseline.get("remote_content_sha256") or "")):
+        raise RuntimeError("Drive-Sicherheitsabbruch: Zellinhalt-Fingerprint ist ungültig.")
     local_digest = _sha256_file(source_file)
     if local_digest != baseline.get("local_source_sha256"):
         raise RuntimeError(
@@ -4172,18 +4181,18 @@ def _load_drive_source_baseline(source_file: str) -> dict:
 
 
 def _drive_metadata_matches(metadata: dict, baseline: dict) -> bool:
+    """Check immutable file identity; revision number is validated via cell hash."""
     if not isinstance(metadata, dict):
         return False
     return (
         str(metadata.get("id")) == str(baseline.get("file_id"))
-        and str(metadata.get("version")) == str(baseline.get("version"))
-        # Drive version is the revision guard; modifiedTime is diagnostic only.
+        and bool(metadata.get("version"))
         and str(metadata.get("mimeType")) == str(baseline.get("mime_type"))
         and (not baseline.get("md5_checksum") or str(metadata.get("md5Checksum") or "") == str(baseline.get("md5_checksum")))
     )
 
 
-def _verify_drive_source_baseline_with_service(drive, baseline: dict) -> dict:
+def _verify_drive_source_baseline_with_service(drive, baseline: dict, sheets=None) -> dict:
     metadata = drive.files().get(
         fileId=baseline["file_id"],
         fields="id,name,mimeType,parents,version,modifiedTime,md5Checksum,trashed",
@@ -4191,7 +4200,6 @@ def _verify_drive_source_baseline_with_service(drive, baseline: dict) -> dict:
     if metadata.get("trashed") or not _drive_metadata_matches(metadata, baseline):
         expected_fields = {
             "id": baseline.get("file_id"),
-            "version": baseline.get("version"),
             "mimeType": baseline.get("mime_type"),
         }
         if baseline.get("md5_checksum"):
@@ -4201,18 +4209,40 @@ def _verify_drive_source_baseline_with_service(drive, baseline: dict) -> dict:
             for field, expected in expected_fields.items()
             if str(metadata.get(field) or "") != str(expected or "")
         ]
+        if not metadata.get("version"):
+            mismatches.append("version: fehlt")
         if metadata.get("trashed"):
             mismatches.append("trashed=True")
         raise RuntimeError(
-            "Drive-Konflikt: Die Positionsquelle wurde seit dem Tracker-Upload "
-            "extern geändert oder ersetzt. Der alte lokale Stand wird nicht "
+            "Drive-Konflikt: Die Positionsquelle wurde ersetzt, entfernt oder hat "
+            "einen unzulässigen Metadatenzustand. Der alte lokale Stand wird nicht "
             "hochgeladen; die aktuelle Drive-Datei bleibt unangetastet. "
             "Abweichende Schutzfelder: " + "; ".join(mismatches)
         )
+
+    if sheets is None:
+        raise RuntimeError("Drive-Sicherheitsabbruch: Sheets-Service für Zellinhalt-Prüfung fehlt.")
+    actual_content_sha256 = google_sheet_content_sha256(sheets, baseline["file_id"])
+    expected_content_sha256 = str(baseline.get("remote_content_sha256") or "")
+    if actual_content_sha256 != expected_content_sha256:
+        raise RuntimeError(
+            "Drive-Konflikt: Zellinhalte der Positionsquelle haben sich seit dem "
+            "Tracker-Upload geändert. Der alte lokale Stand wird nicht hochgeladen; "
+            "die aktuelle Drive-Datei bleibt unangetastet. "
+            f"Zellinhalt-SHA256 erwartet={expected_content_sha256}, "
+            f"aktuell={actual_content_sha256}."
+        )
+
+    if str(metadata.get("version")) != str(baseline.get("version")):
+        print(
+            "DRIVE-HINWEIS: Drive-Version hat sich geändert, aber alle Zellwerte "
+            "sind identisch; Metadaten-/Formatrevision wird akzeptiert. "
+            f"Tracker-Version={baseline.get('version')!r}, aktuell={metadata.get('version')!r}."
+        )
     if str(metadata.get("modifiedTime")) != str(baseline.get("modified_time")):
         print(
-            "DRIVE-HINWEIS: modifiedTime weicht bei identischer Drive-Version ab; "
-            "kein Revisionskonflikt (Zeitstempel nur Diagnose). "
+            "DRIVE-HINWEIS: modifiedTime weicht vom Tracker-Zeitpunkt ab; "
+            "Zellinhalt-Fingerprint ist unverändert. "
             f"Erwartet={baseline.get('modified_time')!r}, "
             f"aktuell={metadata.get('modifiedTime')!r}."
         )
@@ -4221,7 +4251,8 @@ def _verify_drive_source_baseline_with_service(drive, baseline: dict) -> dict:
 
 def _verify_drive_source_baseline(creds, baseline: dict) -> dict:
     drive = build("drive", "v3", credentials=creds)
-    return _verify_drive_source_baseline_with_service(drive, baseline)
+    sheets = build("sheets", "v4", credentials=creds)
+    return _verify_drive_source_baseline_with_service(drive, baseline, sheets=sheets)
 
 
 def _sync_cleaned_source_to_drive(
@@ -4256,7 +4287,7 @@ def _sync_cleaned_source_to_drive(
     drive = build("drive", "v3", credentials=creds)
     sheets = build("sheets", "v4", credentials=creds)
 
-    _verify_drive_source_baseline_with_service(drive, expected_drive_state)
+    _verify_drive_source_baseline_with_service(drive, expected_drive_state, sheets=sheets)
 
     q = (
         "(name='Offene_Positionen' or name='Offene_Positionen.csv') "
@@ -4353,14 +4384,16 @@ def _sync_cleaned_source_to_drive(
                 "bereinigten CSV überein."
             )
 
-        # Unmittelbar vor dem Remote-Swap müssen sowohl die beim Tracker-Upload
-        # gespeicherte Drive-Version als auch der lokale Transaktionsstand stimmen.
+        # Unmittelbar vor dem Remote-Swap müssen der beim Tracker-Upload
+        # gespeicherte Zellinhalt-Fingerprint und der lokale Transaktionsstand stimmen.
         if _sha256_file(source_file) != expected_local_sha256:
             raise RuntimeError(
                 "Drive-Synchronisierung abgebrochen: lokale Quelldatei änderte sich "
                 "vor dem Remote-Swap; externe Änderung bleibt erhalten."
             )
-        _verify_drive_source_baseline_with_service(drive, expected_drive_state)
+        expected_drive_state = _verify_drive_source_baseline_with_service(
+            drive, expected_drive_state, sheets=sheets
+        )
 
         # Erst jetzt den produktiven Namen freimachen. Die alte Quelle bleibt
         # unter einem Backup-Namen erhalten, bis der neue Stand verifiziert ist.
@@ -4368,6 +4401,9 @@ def _sync_cleaned_source_to_drive(
             archived = archive_drive_backup(
                 drive, old_id, FOLDER_ID,
                 prefix="Offene_Positionen.__BACKUP_",
+                # expected_drive_state now holds the exact revision just
+                # revalidated against the baseline cell fingerprint. The backup
+                # helper closes the race window from here to its rename request.
                 expected_revision=expected_drive_state,
             )
             backup_id = old_id
