@@ -1,0 +1,28 @@
+FINALER TESTLAUF – Sektor-Analyse Korrekturpaket
+Zeitpunkt: 2026-11-27 21:10:43
+Arbeitsbasis: Nutzer-Quellarchiv SHA-256 2734c708df36e751dca7f3763c0a31c732085296bed612121f66438a15b4c6d7
+GitHub main HEAD: 95805e77ec02d9a7927bf5fe579ddcfc1b125cff
+
+Kommando:
+python -m pytest -q tests/test_pre_scan_workflow_contract.py tests/test_trading_radar_market_first.py tests/test_trading_radar_report_gate.py
+
+Ergebnis:
+[32m[32m[1m274 passed[0m, [32m[1m11 subtests passed[0m[32m in 35.99s[0m[0m
+Returncode: 0
+Laufzeit: ca. 43 Sekunden
+
+Zusätzliche Prüfungen:
+- py_compile für trading_radar_market_first.py: PASS
+- py_compile für tests/test_trading_radar_market_first.py: PASS
+- py_compile für tests/test_trading_radar_report_gate.py: PASS
+- py_compile für tests/test_pre_scan_workflow_contract.py: PASS
+- YAML-Parsing der vollständigen .github/workflows/main.yml: PASS
+- Bash-Syntaxprüfung OHLCV-Pre-Scan-Schritt: PASS
+- Bash-Syntaxprüfung Trading-Radar-Report-Check-Schritt: PASS
+- Whitespace-Prüfung der fünf Code-/Testdateien: 0 trailing-whitespace-Befunde
+- Zeilenenden: LF, keine CRLF- oder isolierten CR-Zeilenenden
+- actionlint: nicht installiert; daher nicht ausgeführt
+- GitHub Actions End-to-End: nicht ausgeführt; kein Workflow gestartet
+
+Hinweis:
+Beim Start der Python-Testumgebung erschien eine externe artifact_tool-Spreadsheet-Warmup-Warnung (RemoteError). Sie trat vor dem pytest-Lauf auf; pytest endete mit Returncode 0 und allen Tests bestanden.

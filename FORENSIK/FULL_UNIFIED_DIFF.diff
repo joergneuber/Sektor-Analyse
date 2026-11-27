@@ -1,0 +1,424 @@
+--- GitHub-main/.github/workflows/main.yml
++++ ZIP-final/.github/workflows/main.yml
+@@ -383,7 +383,7 @@
+           NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+           NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+           NMM_USE_HISTORICAL_OHLCV: "1"
+-        run: python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv
++        run: python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv --refresh-current-session-gaps
+ 
+       # ============================================================
+       # OFFENE POSITIONEN + TECHNISCHER CHECK
+@@ -400,6 +400,8 @@
+ 
+       # Nach dem Provider-Fallback muessen alle offenen Positionen mit einer
+       # aktuellen, vom Quality Gate freigegebenen Historie in SQLite vorliegen.
++      # Nur transiente fehlende Handelssitzungen werden gezielt nachgeladen.
++      # Strukturelle Quality-Fehler bleiben sichtbar und werden nicht umgangen.
+       - name: Offene OHLCV-Historien abschliessend qualitaetspruefen
+         id: ohlcv-pre-scan-position-verify
+         continue-on-error: true
+@@ -407,7 +409,36 @@
+           NMM_HISTORICAL_OHLCV_DB: historical_ohlcv.sqlite
+           NMM_HISTORICAL_OHLCV_DYNAMIC_UNIVERSE: historical_ohlcv_universe.json
+           NMM_USE_HISTORICAL_OHLCV: "1"
+-        run: python historical_ohlcv.py verify-open-positions --positions-file Offene_Positionen.csv
++        run: |
++          set +e
++          positions_rc=1
++          for attempt in 1 2 3; do
++            verify_output="$(python historical_ohlcv.py verify-open-positions --positions-file Offene_Positionen.csv 2>&1)"
++            positions_rc=$?
++            printf '%s\n' "$verify_output"
++            if [ "$positions_rc" -eq 0 ]; then
++              break
++            fi
++            # Nur fehlende/verspaetete Historien loesen einen Retry aus.
++            # INVALID-/Quality-Gate-Befunde werden nicht durch Wiederholungen
++            # oder eine gelockerte Pruefung verdeckt.
++            if [ "$attempt" -ge 3 ] || ! printf '%s\n' "$verify_output" | grep -Eq 'STALE_HISTORY:|NO_STORED_BARS'; then
++              break
++            fi
++            echo "OHLCV_PRE_SCAN_POSITION_RETRY=${attempt}/3 | gezielter Refresh in 45 Sekunden"
++            sleep 45
++            sync_output="$(python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv --refresh-current-session-gaps 2>&1)"
++            sync_rc=$?
++            printf '%s\n' "$sync_output"
++            if [ "$sync_rc" -ne 0 ]; then
++              echo "::warning::Gezielter OHLCV-Refresh lieferte Exitcode ${sync_rc}; Positionspruefung bleibt massgeblich."
++            fi
++            if ! printf '%s\n' "$sync_output" | grep -Eq 'HIST-OHLCV-SESSION-REFRESH: requested=[0-9]+ stale=[1-9][0-9]*'; then
++              echo "OHLCV_PRE_SCAN_POSITION_RETRY=STOP | keine nachgewiesene aktuelle Session-Luecke fuer einen weiteren Versuch"
++              break
++            fi
++          done
++          exit "$positions_rc"
+ 
+       # Live-Benchmark gegen iShares Core MSCI World (EUNL.DE),
+       # Stichtag 07.08.2026. Kein Backtest: verarbeitet offene Positionen
+@@ -1171,6 +1202,7 @@
+       - name: Neue Trading-Radar technisch gültig und frisch verifizieren
+         id: trading-radar-report-check
+         if: always()
++        continue-on-error: true
+         env:
+           TRADING_RADAR_CONTRACT_OUTCOME: ${{ steps.trading-radar-contract.outcome }}
+           TRADING_RADAR_STEP_OUTCOME: ${{ steps.trading-radar.outcome }}
+@@ -1179,6 +1211,17 @@
+           TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
+         run: |
+           set -euo pipefail
++          # Jeder fehlgeschlagene Report-Check muss fachlich NICHT_FINAL
++          # ausgeben – auch bei Fehlern vor dem eigentlichen Report-Gate.
++          report_check_exit() {
++            local rc=$?
++            trap - EXIT
++            if [ "$rc" -ne 0 ]; then
++              echo "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" >> "$GITHUB_OUTPUT"
++            fi
++            exit "$rc"
++          }
++          trap report_check_exit EXIT
+           if [ "${TRADING_RADAR_CONTRACT_OUTCOME:-}" != "success" ]; then
+             echo "REPORT_CHECK=FAIL | Trading-Radar-Datenvertrag-Vorprüfung fehlgeschlagen (Outcome=${TRADING_RADAR_CONTRACT_OUTCOME:-missing}); Verifikation abgebrochen; kein Gemini-Fehler diagnostiziert."
+             exit 1
+@@ -1204,7 +1247,13 @@
+           # stehen lassen. Erst nach erfolgreicher Gate-Pruefung bleibt FINAL moeglich.
+           if ! python trading_radar_report_gate.py "$TRADING_RADAR_DATEI"; then
+             sed -i 's/^TRADING_RADAR_FACHLICH_FINAL=FINAL$/TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL/' "$TRADING_RADAR_DATEI"
+-            echo "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" >> "$GITHUB_OUTPUT"
++            report_status_count=$(grep -Ec '^TRADING_RADAR_FACHLICH_FINAL=(FINAL|NICHT_FINAL)$' "$TRADING_RADAR_DATEI" || true)
++            if [ "$report_status_count" -ne 1 ] || ! grep -qx 'TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL' "$TRADING_RADAR_DATEI"; then
++              echo "REPORT_CHECK=FAIL | Gate fehlgeschlagen und Berichtstatus nicht eindeutig auf NICHT_FINAL herstellbar."
++              exit 1
++            fi
++            echo "TRADING_RADAR_REPORT_MAIL_ELIGIBLE=true" >> "$GITHUB_OUTPUT"
++            echo "::warning::Trading-Radar bleibt NICHT_FINAL; Report-Gate fehlgeschlagen. Keine regulaere Drive-Freigabe."
+             echo "REPORT_CHECK=FAIL | Bericht auf NICHT_FINAL herabgestuft; keine regulaere Freigabe."
+             exit 1
+           fi
+@@ -1219,6 +1268,7 @@
+             exit 1
+           fi
+           echo "TRADING_RADAR_FACHLICH_FINAL=$report_status" >> "$GITHUB_OUTPUT"
++          echo "TRADING_RADAR_REPORT_MAIL_ELIGIBLE=true" >> "$GITHUB_OUTPUT"
+           echo "REPORT_CHECK=PASS | frischer Bericht, acht Abschnitte und eindeutiger Status=$report_status"
+ 
+       # Das Gate-Ergebnis wird erst nach dem Report-Check in den End-Snapshot
+@@ -1233,7 +1283,7 @@
+           TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate || 'NOT_RUN' }}
+           TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate || 'NOT_RUN' }}
+           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
+-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || steps.trading-radar.outputs.fachlich_final || 'NICHT_FINAL' }}
++          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || 'NICHT_FINAL' }}
+         run: python trading_radar_run_evidence.py gate-result
+ 
+       - name: Trading-Radar Evidence final validieren
+@@ -1246,7 +1296,7 @@
+           TRADING_RADAR_OHLCV_QUEUE_GATE: ${{ steps.trading-radar.outputs.ohlcv_queue_gate || 'NOT_RUN' }}
+           TRADING_RADAR_MARKET_FIRST_GATE: ${{ steps.trading-radar.outputs.market_first_gate || 'NOT_RUN' }}
+           TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}
+-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || steps.trading-radar.outputs.fachlich_final || 'NICHT_FINAL' }}
++          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || 'NICHT_FINAL' }}
+         run: python trading_radar_run_evidence.py validate-final
+ 
+       - name: Trading-Radar Laufnachweis als Artifact sichern
+@@ -1318,7 +1368,7 @@
+         # FINAL wird nur nach bestandenem Report-Gate regulär versendet.
+         # Ein technisch erzeugter NICHT_FINAL-Bericht wird trotzdem zugestellt,
+         # damit Fehler sichtbar sind; er bleibt klar als nicht freigegeben markiert.
+-        if: ${{ always() && steps.trading-radar.outcome == 'success' && steps.trading-radar.outputs.status == 'SUCCESS' && (steps.trading-radar.outputs.fachlich_final == 'FINAL' || steps.trading-radar.outputs.fachlich_final == 'NICHT_FINAL') && env.CHATGPT_FALLBACK_ERZEUGT != 'true' && (steps.trading-radar.outputs.fachlich_final == 'NICHT_FINAL' || steps.trading-radar-report-check.outcome == 'success') }}
++        if: ${{ always() && steps.trading-radar.outcome == 'success' && steps.trading-radar.outputs.status == 'SUCCESS' && steps.trading-radar-report-check.outputs.TRADING_RADAR_REPORT_MAIL_ELIGIBLE == 'true' && (steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL == 'FINAL' || steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL == 'NICHT_FINAL') && env.CHATGPT_FALLBACK_ERZEUGT != 'true' }}
+         env:
+           SMTP_HOST: ${{ secrets.SMTP_HOST }}
+           SMTP_PORT: ${{ secrets.SMTP_PORT }}
+@@ -1326,7 +1376,7 @@
+           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+           MAIL_EMPFAENGER: ${{ secrets.MAIL_EMPFAENGER }}
+           TRADING_RADAR_STATUS: ${{ steps.trading-radar.outputs.status }}
+-          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar.outputs.fachlich_final }}
++          TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || 'NICHT_FINAL' }}
+           TRADING_RADAR_DATEI: ${{ steps.trading-radar.outputs.report_path }}
+           TRADING_RADAR_REPORT_CHECK_OUTCOME: ${{ steps.trading-radar-report-check.outcome }}
+         run: python send_mail.py
+--- GitHub-main/trading_radar_market_first.py
++++ ZIP-final/trading_radar_market_first.py
+@@ -978,6 +978,30 @@
+         session_cutoff = _completed_nyse_session_cutoff(snapshot_clock)
+     except RuntimeError as exc:
+         return report_text, [f"Markt-Snapshot nicht erstellt: NYSE-Kalenderfehler: {exc}"]
++
++    # The market-regime report requires one completed close shared by VIX and
++    # Yahoo's DX-Y.NYB daily bar. An XNYS early close is not sufficient for the
++    # 17:00 ET ICE USDX close (e.g. the 2026-11-27 Black Friday session).
++    # Reuse the report gate's independently tested Cboe/ICE calendar contract;
++    # if that calendar cannot establish the common date, do not publish a
++    # plausible-looking but temporally inconsistent market snapshot.
++    try:
++        from trading_radar_report_gate import _m02_expected_common_session_date
++
++        common_risk_session = _m02_expected_common_session_date(
++            snapshot_clock.to_pydatetime()
++        )
++    except Exception as exc:
++        return report_text, [
++            "Markt-Snapshot nicht erstellt: gemeinsamer VIX/DXY-Kalenderfehler: "
++            f"{type(exc).__name__}: {exc}"
++        ]
++    if common_risk_session is None:
++        return report_text, [
++            "Markt-Snapshot nicht erstellt: gemeinsamer abgeschlossener VIX/DXY-Stichtag "
++            "ist nicht verifizierbar."
++        ]
++    session_cutoff = min(session_cutoff, common_risk_session)
+     if fetcher is None:
+         try:
+             import yfinance as yf
+--- GitHub-main/tests/test_trading_radar_market_first.py
++++ ZIP-final/tests/test_trading_radar_market_first.py
+@@ -2529,3 +2529,56 @@
+     assert "Konsens: NICHT VERFÜGBAR (keine separat live verifizierte Futures-Quelle)" in normalized
+     assert "Unverifizierter Vorwert: 3.75%-4.00% (EFFR 3.88%)" in normalized
+     assert "Unverifizierte Markterwartung: Hold 66%, Hike 34% (Impliziert aus Futures ZQ)" in normalized
++
++
++def test_live_market_snapshot_uses_common_vix_dxy_close_after_nyse_early_close():
++    """Black Friday's XNYS early close must not make the 17:00 ET DXY bar complete."""
++    import pandas as pd
++    from trading_radar_market_first import append_live_market_snapshot
++
++    symbols = [
++        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "DX=F", "^TNX", "TLT",
++        "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
++        "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
++    ]
++    index = pd.bdate_range(end="2026-11-27", periods=100, freq="B", tz="UTC")
++    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
++    values = {
++        (symbol, "Close"): [100.0 + i * 0.1 for i in range(len(index))]
++        for symbol in symbols
++    }
++    values[("^VIX", "Close")] = [18.0 + i * 0.1 for i in range(len(index))]
++    values[("DX-Y.NYB", "Close")] = [100.0 + i * 0.1 for i in range(len(index))]
++    data = pd.DataFrame(values, index=index, columns=columns)
++    report = (
++        "1. Trading-Radar\nMarktregime: konstruktiv.\n"
++        "Indizes/Marktbreite: Marktbreite 8/11.\n"
++        "Zinsen/Renditen: US 10Y Treasury bei 4,00%.\n"
++        "Dollar/Liquidität/Volatilität: VIX NICHT VERFÜGBAR; DXY NICHT VERFÜGBAR.\n"
++        "2. Thesen-Update\n\n3. Ereignisradar\nKeine relevanten Ereignisse.\n"
++        "4. Assetklassenvergleich\n\n5. Technische Kandidaten\n"
++    )
++
++    # 19:58:28 UTC = 14:58:28 ET. VIX's 13:00 ET early close is complete,
++    # but Yahoo DX-Y.NYB's 17:00 ET daily close is not. The latest common
++    # completed observation is therefore the previous session, 2026-11-26.
++    result, findings = append_live_market_snapshot(
++        report,
++        fetcher=lambda requested: data,
++        as_of_time="2026-11-27T19:58:28+00:00",
++    )
++
++    assert findings == []
++    assert "Marktregime-Datenstichtag: 2026-11-26" in result
++    vix_line = next(line for line in result.splitlines() if line.startswith("- Volatilität VIX:"))
++    dxy_line = next(line for line in result.splitlines() if line.startswith("- Dollar-Proxy DXY"))
++    assert "Datenstichtag: 2026-11-26" in vix_line
++    assert "Datenstichtag: 2026-11-26" in dxy_line
++    assert "Datenstichtag: 2026-11-27" not in vix_line + dxy_line
++    expected_index = index.get_loc(pd.Timestamp("2026-11-26", tz="UTC"))
++    assert f": {18.0 + expected_index * 0.1:.2f} |" in vix_line
++    assert f": {100.0 + expected_index * 0.1:.2f} |" in dxy_line
++    assert "VIX: 18.00" not in next(
++        line for line in result.splitlines()
++        if line.startswith("Dollar/Liquidität/Volatilität:")
++    )
+--- GitHub-main/tests/test_trading_radar_report_gate.py
++++ ZIP-final/tests/test_trading_radar_report_gate.py
+@@ -1200,6 +1200,9 @@
+     # Cboe's published early close on Nov 27 is 13:00 ET; ICE is not
+     # considered complete until its regular 17:00 ET close.
+     assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-27T18:01:00+00:00")) == date(2026, 11, 26)
++    # The failed production run retrieved the report at 19:58:28 UTC; the
++    # common VIX/DXY close was still Nov 26 even though XNYS had closed early.
++    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-27T19:58:28+00:00")) == date(2026, 11, 26)
+     assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-27T22:01:00+00:00")) == date(2026, 11, 27)
+ 
+ 
+--- /dev/null
++++ ZIP-final/tests/test_pre_scan_workflow_contract.py
+@@ -0,0 +1,174 @@
++"""Regression checks for the fail-closed OHLCV and Trading-Radar workflow contract."""
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++import textwrap
++
++ROOT = Path(__file__).resolve().parents[1]
++WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
++
++
++def _step_block(text: str, start_name: str, next_name: str) -> str:
++    start = text.index(f"- name: {start_name}")
++    end = text.index(f"- name: {next_name}", start)
++    return text[start:end]
++
++
++def test_open_positions_get_a_bounded_refresh_before_scanners_without_weakening_quality():
++    workflow = WORKFLOW.read_text(encoding="utf-8")
++    sync = _step_block(
++        workflow,
++        "Offene Positionen ins historische OHLCV-Universum übernehmen",
++        "Offene Positionen + Check erstellen und in Drive aktualisieren",
++    )
++    verify = _step_block(
++        workflow,
++        "Offene OHLCV-Historien abschliessend qualitaetspruefen",
++        "Live-Benchmark gegen MSCI World aktualisieren",
++    )
++
++    assert "continue-on-error: true" in sync
++    assert "sync-open-positions --positions-file Offene_Positionen.csv --refresh-current-session-gaps" in sync
++    assert "continue-on-error: true" in verify
++    assert "for attempt in 1 2 3" in verify
++    assert "STALE_HISTORY:|NO_STORED_BARS" in verify
++    assert "HIST-OHLCV-SESSION-REFRESH: requested=[0-9]+ stale=[1-9][0-9]*" in verify
++    assert "sleep 45" in verify
++    assert 'exit "$positions_rc"' in verify
++    assert workflow.index("- name: Offene Positionen ins historische OHLCV-Universum übernehmen") < workflow.index(
++        "- name: Offene OHLCV-Historien abschliessend qualitaetspruefen"
++    )
++
++
++def test_report_gate_failure_is_non_blocking_for_job_but_remains_failure_in_evidence():
++    workflow = WORKFLOW.read_text(encoding="utf-8")
++    report_check = _step_block(
++        workflow,
++        "Neue Trading-Radar technisch gültig und frisch verifizieren",
++        "Trading-Radar Evidence nach Report-Gate finalisieren",
++    )
++    evidence = _step_block(
++        workflow,
++        "Trading-Radar Evidence nach Report-Gate finalisieren",
++        "Trading-Radar Evidence final validieren",
++    )
++
++    assert "continue-on-error: true" in report_check
++    assert "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" in report_check
++    assert "TRADING_RADAR_REPORT_MAIL_ELIGIBLE=true" in report_check
++    assert "::warning::Trading-Radar bleibt NICHT_FINAL" in report_check
++    assert "TRADING_RADAR_REPORT_GATE: ${{ steps.trading-radar-report-check.outcome }}" in evidence
++    assert "steps.trading-radar-report-check.outcome == 'success'" in workflow
++
++
++def test_gate_downgraded_nonfinal_report_is_emailed_but_never_regularly_uploaded():
++    workflow = WORKFLOW.read_text(encoding="utf-8")
++    email = _step_block(
++        workflow,
++        "Trading-Radar per E-Mail versenden (FINAL oder klar markiertes NICHT_FINAL)",
++        "Technischen Gemini-Fallback per E-Mail melden",
++    )
++    drive = _step_block(workflow, "Daten hochladen", "Trading-Radar per E-Mail versenden (FINAL oder klar markiertes NICHT_FINAL)")
++
++    assert "steps.trading-radar-report-check.outputs.TRADING_RADAR_REPORT_MAIL_ELIGIBLE == 'true'" in email
++    assert "steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL == 'NICHT_FINAL'" in email
++    assert "TRADING_RADAR_FACHLICH_FINAL: ${{ steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || 'NICHT_FINAL' }}" in email
++    assert "steps.trading-radar-report-check.outcome == 'success'" in drive
++    assert "steps.trading-radar.outputs.fachlich_final == 'FINAL'" in drive
++
++
++def test_any_early_report_check_failure_exports_nicht_final():
++    """Even a precondition failure must not leak the upstream FINAL status to evidence."""
++    workflow = WORKFLOW.read_text(encoding="utf-8")
++    report_check = _step_block(
++        workflow,
++        "Neue Trading-Radar technisch gültig und frisch verifizieren",
++        "Trading-Radar Evidence nach Report-Gate finalisieren",
++    )
++    assert "trap report_check_exit EXIT" in report_check
++    assert 'echo "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" >> "$GITHUB_OUTPUT"' in report_check
++
++    marker = "        run: |\n"
++    assert marker in report_check
++    script = report_check.split(marker, 1)[1]
++    script = script.split("\n      - name:", 1)[0]
++    script = textwrap.dedent(script)
++
++    with tempfile.NamedTemporaryFile(mode="r+", encoding="utf-8") as output:
++        env = os.environ.copy()
++        env.update({
++            "GITHUB_OUTPUT": output.name,
++            "TRADING_RADAR_CONTRACT_OUTCOME": "failure",
++            "TRADING_RADAR_STEP_OUTCOME": "success",
++            "TRADING_RADAR_STATUS": "SUCCESS",
++            "TRADING_RADAR_FACHLICH_FINAL": "FINAL",
++            "TRADING_RADAR_DATEI": "",
++        })
++        result = subprocess.run(
++            ["bash", "-euo", "pipefail", "-c", script],
++            env=env,
++            text=True,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            check=False,
++        )
++        output.seek(0)
++        emitted = output.read()
++
++    assert result.returncode == 1
++    assert emitted.strip() == "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL"
++    assert "TRADING_RADAR_REPORT_MAIL_ELIGIBLE=true" not in emitted
++
++
++def test_report_gate_failure_downgrades_and_allows_mail_only_for_valid_report():
++    """A real fresh report may be mailed as NICHT_FINAL after the gate rejects it."""
++    workflow = WORKFLOW.read_text(encoding="utf-8")
++    report_check = _step_block(
++        workflow,
++        "Neue Trading-Radar technisch gültig und frisch verifizieren",
++        "Trading-Radar Evidence nach Report-Gate finalisieren",
++    )
++    marker = "        run: |\n"
++    script = textwrap.dedent(report_check.split(marker, 1)[1].split("\n      - name:", 1)[0])
++
++    with tempfile.TemporaryDirectory() as tmp:
++        root = Path(tmp)
++        started = root / ".trading_radar_run_started"
++        report = root / "report.txt"
++        fake_bin = root / "bin"
++        fake_bin.mkdir()
++        fake_python = fake_bin / "python"
++        fake_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
++        fake_python.chmod(0o755)
++        started.write_text("started\n", encoding="utf-8")
++        os.utime(started, (1, 1))
++        report.write_text("Report\nTRADING_RADAR_FACHLICH_FINAL=FINAL\n", encoding="utf-8")
++
++        output = root / "github_output.txt"
++        env = os.environ.copy()
++        env.update({
++            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
++            "GITHUB_OUTPUT": str(output),
++            "TRADING_RADAR_CONTRACT_OUTCOME": "success",
++            "TRADING_RADAR_STEP_OUTCOME": "success",
++            "TRADING_RADAR_STATUS": "SUCCESS",
++            "TRADING_RADAR_FACHLICH_FINAL": "FINAL",
++            "TRADING_RADAR_DATEI": str(report),
++        })
++        result = subprocess.run(
++            ["bash", "-euo", "pipefail", "-c", script],
++            cwd=tmp,
++            env=env,
++            text=True,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            check=False,
++        )
++        emitted = output.read_text(encoding="utf-8")
++        downgraded_report = report.read_text(encoding="utf-8")
++
++    assert result.returncode == 1
++    assert "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" in emitted
++    assert "TRADING_RADAR_REPORT_MAIL_ELIGIBLE=true" in emitted
++    assert "TRADING_RADAR_FACHLICH_FINAL=NICHT_FINAL" in downgraded_report
