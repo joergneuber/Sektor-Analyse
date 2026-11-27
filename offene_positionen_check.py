@@ -30,6 +30,7 @@ import io
 import json
 import math
 import os
+import stat
 import sys
 import re
 import ast
@@ -43,6 +44,7 @@ import numpy as np
 import pandas as pd
 
 from positionen_datum import parse_position_date, position_date_to_sheets_serial, reject_excel_date_serial_price
+from positions_drive_backups import archive_drive_backup, cleanup_expired_drive_backups
 import yfinance as yf
 from scipy.signal import argrelextrema
 
@@ -59,6 +61,7 @@ except Exception:
 
 
 INPUT_FILE = "Offene_Positionen.csv"
+DRIVE_BASELINE_FILE = ".offene_positionen_drive_baseline.json"
 OUTPUT_CSV = "Offene Positionen+Check.csv"
 DRIVE_NAME = "Offene Positionen+Check"
 # Legacy-Fallback nur solange kein recovery/recovery_manifest.json vorhanden ist.
@@ -3622,6 +3625,395 @@ def _position_key(row) -> tuple:
     return (name, ticker, round(float(entry), 10), date)
 
 
+def _is_blank_market_value(value) -> bool:
+    """True only for genuinely empty market-data cells, not malformed values."""
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip().casefold() in {"", "nan", "none", "null", "nat"}
+
+
+def backfill_missing_market_data_to_source(
+    source_file: str,
+    checked_open_df: pd.DataFrame,
+    snapshot_path: Optional[str] = None,
+) -> int:
+    """Backfills only missing quote/performance cells from the checked output.
+
+    The check output prefers the tracker quote and otherwise uses the last
+    completed close that passed the OHLCV quality gate. Existing non-empty
+    source values, entry facts, stops, targets, statuses and all other fields
+    are preserved. Rows are matched by the canonical position identity, not
+    ticker alone, so separate trades in the same instrument remain distinct.
+    """
+    if checked_open_df is None or not isinstance(checked_open_df, pd.DataFrame):
+        raise TypeError("Geprüfte Positionsausgabe muss ein pandas.DataFrame sein.")
+    if snapshot_path:
+        _assert_source_matches_known_snapshot_state(snapshot_path, source_file)
+    # Bind the read/modify/write operation to the exact source version read.
+    # Internal workflow concurrency cannot prevent manual/external Drive edits.
+    source_stat_before_read = os.stat(source_file)
+    source_digest_before_read = _sha256_file(source_file)
+    source_stat_after_read_hash = os.stat(source_file)
+    if (
+        source_stat_before_read.st_size != source_stat_after_read_hash.st_size
+        or source_stat_before_read.st_mtime_ns != source_stat_after_read_hash.st_mtime_ns
+        or stat.S_IMODE(source_stat_before_read.st_mode)
+        != stat.S_IMODE(source_stat_after_read_hash.st_mode)
+    ):
+        raise RuntimeError(
+            "Quell-Backfill abgebrochen; Offene_Positionen.csv änderte sich "
+            "während der initialen Integritätsprüfung."
+        )
+    source = read_positions(source_file)
+    source_stat_after_read = os.stat(source_file)
+    source_digest_after_read = _sha256_file(source_file)
+    if (
+        source_digest_after_read != source_digest_before_read
+        or source_stat_after_read.st_size != source_stat_before_read.st_size
+        or source_stat_after_read.st_mtime_ns != source_stat_before_read.st_mtime_ns
+        or stat.S_IMODE(source_stat_after_read.st_mode)
+        != stat.S_IMODE(source_stat_before_read.st_mode)
+    ):
+        raise RuntimeError(
+            "Quell-Backfill abgebrochen; Offene_Positionen.csv änderte sich "
+            "während des Einlesens."
+        )
+    if snapshot_path:
+        _assert_source_matches_known_snapshot_state(snapshot_path, source_file)
+    required = {
+        "Ticker", "Name", "Einstiegsdatum", "Einstieg", "Status",
+        "Aktueller_Kurs", "Performance_Seit_Einstieg%",
+    }
+    missing = sorted(required.difference(source.columns))
+    if missing:
+        raise RuntimeError(
+            "Quell-Backfill abgebrochen; Pflichtspalten fehlen: " + ", ".join(missing)
+        )
+    source_open = source[
+        source["Status"].astype(str).str.strip().str.casefold().eq("offen")
+        & ~source["Ticker"].astype(str).str.strip().str.upper().eq("ANLEITUNG")
+    ]
+    if checked_open_df.empty:
+        if not source_open.empty:
+            raise RuntimeError(
+                "Quell-Backfill abgebrochen; Check-Ausgabe ist leer, "
+                "obwohl die Quelldatei offene Positionen enthält."
+            )
+        print(
+            "QUELL-KURSBACKFILL: keine offenen Positionen in Quelle und "
+            "Check-Ausgabe; nichts zu ergänzen."
+        )
+        return 0
+
+    missing_output = sorted(
+        {"Ticker", "Name", "Einstiegsdatum", "Einstieg", "Status",
+         "Aktueller_Kurs", "Performance_Seit_Einstieg%"}.difference(checked_open_df.columns)
+    )
+    if missing_output:
+        raise RuntimeError(
+            "Quell-Backfill abgebrochen; Check-Ausgabe hat Pflichtspalten nicht: "
+            + ", ".join(missing_output)
+        )
+
+    checked_by_key = {}
+    for _, checked_row in checked_open_df.iterrows():
+        if str(checked_row.get("Status", "")).strip().casefold() != "offen":
+            continue
+        key = _position_key(checked_row)
+        if key in checked_by_key:
+            raise RuntimeError(
+                "Quell-Backfill abgebrochen; Check-Ausgabe enthält einen "
+                f"doppelten Positionsschlüssel: {key}"
+            )
+        checked_by_key[key] = checked_row
+
+    source_keys = [_position_key(row) for _, row in source_open.iterrows()]
+    if len(source_keys) != len(set(source_keys)):
+        raise RuntimeError(
+            "Quell-Backfill abgebrochen; Offene_Positionen.csv enthält "
+            "doppelte Positionsschlüssel."
+        )
+    if set(checked_by_key) != set(source_keys):
+        raise RuntimeError(
+            "Quell-Backfill abgebrochen; Check-Ausgabe und Quelldatei enthalten "
+            "nicht denselben Satz offener Positionsschlüssel."
+        )
+
+    changed_rows = 0
+    changed_cells = 0
+    for source_index, source_row in source_open.iterrows():
+        key = _position_key(source_row)
+        checked_row = checked_by_key.get(key)
+        if checked_row is None:
+            raise RuntimeError(
+                "Quell-Backfill abgebrochen; offene Position fehlt in der "
+                f"Check-Ausgabe: {key}"
+            )
+
+        row_changed = False
+        current_source = source.at[source_index, "Aktueller_Kurs"]
+        current_checked = parse_number(checked_row.get("Aktueller_Kurs"))
+        quote_was_backfilled = False
+        if _is_blank_market_value(current_source):
+            if (
+                current_checked is not None
+                and math.isfinite(float(current_checked))
+                and float(current_checked) > 0
+            ):
+                source.at[source_index, "Aktueller_Kurs"] = (
+                    f"{float(current_checked):.2f}".replace(".", ",")
+                )
+                changed_cells += 1
+                row_changed = True
+                quote_was_backfilled = True
+
+        performance_source = source.at[source_index, "Performance_Seit_Einstieg%"]
+        # Kurs und Performance sind ein untrennbares Datenpaar. Die Performance
+        # aus der Check-Ausgabe wird nie blind übernommen. Wenn ein bisher
+        # fehlender Kurs ergänzt wird, muss ein bereits vorhandener Performance-
+        # Wert rechnerisch zu genau diesem gespeicherten Kurs passen. Andernfalls
+        # brechen wir fail-closed ab, statt einen inkonsistenten Datensatz zu
+        # persistieren oder einen vorhandenen Quellwert still zu überschreiben.
+        stored_quote = parse_number(source.at[source_index, "Aktueller_Kurs"])
+        entry_price = parse_number(source.at[source_index, "Einstieg"])
+        valid_quote_and_entry = (
+            stored_quote is not None
+            and math.isfinite(float(stored_quote))
+            and float(stored_quote) > 0
+            and entry_price is not None
+            and math.isfinite(float(entry_price))
+            and float(entry_price) > 0
+        )
+        if quote_was_backfilled and not _is_blank_market_value(performance_source):
+            if not valid_quote_and_entry:
+                raise RuntimeError(
+                    "Quell-Backfill abgebrochen; vorhandene Performance kann nicht "
+                    "gegen den neu zu speichernden Kurs und Einstieg geprüft werden."
+                )
+
+        if valid_quote_and_entry and (
+            _is_blank_market_value(performance_source) or quote_was_backfilled
+        ):
+            direction = str(source_row.get("Richtung", "")).strip().casefold()
+            if direction == "short":
+                is_short = True
+            elif direction == "long":
+                is_short = False
+            else:
+                stop_price = parse_number(source_row.get("Stop"))
+                is_short = stop_price is not None and float(stop_price) > float(entry_price)
+            performance_value = (
+                (float(entry_price) - float(stored_quote)) / float(entry_price) * 100
+                if is_short
+                else (float(stored_quote) - float(entry_price)) / float(entry_price) * 100
+            )
+            rounded_performance = round(performance_value, 2)
+            if not _is_blank_market_value(performance_source):
+                existing_performance = parse_number(performance_source)
+                if (
+                    existing_performance is None
+                    or not math.isfinite(float(existing_performance))
+                    or round(float(existing_performance), 2) != rounded_performance
+                ):
+                    raise RuntimeError(
+                        "Quell-Backfill abgebrochen; vorhandene Performance "
+                        f"({performance_source!r}) passt nicht zum neu zu speichernden "
+                        f"Kurs ({float(stored_quote):.2f}) und Einstieg "
+                        f"({float(entry_price):.2f}); rechnerisch erwartet werden "
+                        f"{rounded_performance:.2f} %. Die Quelldatei bleibt unverändert."
+                    )
+            else:
+                source.at[source_index, "Performance_Seit_Einstieg%"] = (
+                    f"{rounded_performance:.2f}".replace(".", ",")
+                )
+                changed_cells += 1
+                row_changed = True
+
+        if row_changed:
+            changed_rows += 1
+
+    if not changed_cells:
+        source_stat_final = os.stat(source_file)
+        if (
+            _sha256_file(source_file) != source_digest_before_read
+            or source_stat_final.st_size != source_stat_before_read.st_size
+            or source_stat_final.st_mtime_ns != source_stat_before_read.st_mtime_ns
+            or stat.S_IMODE(source_stat_final.st_mode) != stat.S_IMODE(source_stat_before_read.st_mode)
+        ):
+            raise RuntimeError(
+                "Quell-Backfill abgebrochen; Offene_Positionen.csv wurde während "
+                "der Prüfung extern verändert. Die Fremdänderung bleibt erhalten."
+            )
+        print(
+            "QUELL-KURSBACKFILL: keine fehlenden Kurs-/Performancewerte "
+            "mit einem gültigen Check-Kurs ergänzbar."
+        )
+        return 0
+
+    # Atomarer lokaler Austausch mit Read-back und Wiederherstellungspfad.
+    import hashlib
+    import shutil
+    import tempfile
+
+    directory = os.path.dirname(os.path.abspath(source_file)) or "."
+    source_mode = stat.S_IMODE(os.stat(source_file).st_mode)
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(source_file)}.backfill_",
+        suffix=".tmp",
+        dir=directory,
+    )
+    os.close(fd)
+    backup_path = temp_path + ".bak"
+    backup_complete = False
+    preserve_backup = False
+    source_swapped = False
+    expected_backfill_digest = None
+    backup_digest = None
+    try:
+        source.to_csv(
+            temp_path, sep=";", decimal=",", index=False, encoding="utf-8-sig"
+        )
+        verified_temp = read_positions(temp_path)
+        if not source.reset_index(drop=True).equals(
+            verified_temp.reset_index(drop=True)
+        ):
+            raise RuntimeError(
+                "Quell-Backfill abgebrochen; temporäre Datei stimmt nicht "
+                "mit dem geprüften DataFrame überein."
+            )
+        # mkstemp creates mode 0600 by design. Preserve the source file's
+        # permission bits before the atomic replacement.
+        os.chmod(temp_path, source_mode)
+
+        # Never treat a partially written backup as a valid restore source.
+        # Verify both the copy and that the source stayed unchanged while copying.
+        source_stat_before_backup = os.stat(source_file)
+        source_digest_before = _sha256_file(source_file)
+        shutil.copy2(source_file, backup_path)
+        backup_digest = _sha256_file(backup_path)
+        source_digest_after = _sha256_file(source_file)
+        source_stat_after_backup = os.stat(source_file)
+        stable_source = (
+            source_stat_before_backup.st_size == source_stat_after_backup.st_size
+            and source_stat_before_backup.st_mtime_ns == source_stat_after_backup.st_mtime_ns
+            and stat.S_IMODE(source_stat_before_backup.st_mode)
+            == stat.S_IMODE(source_stat_after_backup.st_mode)
+        )
+        if not (
+            stable_source
+            and source_digest_before_read == source_digest_before
+            == backup_digest == source_digest_after
+        ):
+            raise RuntimeError(
+                "Quell-Backfill abgebrochen; Quelldatei änderte sich seit dem "
+                "Einlesen oder das Original-Backup konnte nicht bytegenau "
+                "verifiziert werden. Die externe Quelldatei wird nicht überschrieben."
+            )
+        backup_complete = True
+
+        # Register the exact transaction-produced bytes before replacement.
+        # The outer rollback may restore only one of these known local states.
+        expected_backfill_digest = _sha256_file(temp_path)
+        if snapshot_path:
+            _register_snapshot_source_state(
+                snapshot_path, expected_backfill_digest, source_mode
+            )
+        if _sha256_file(source_file) != backup_digest:
+            raise RuntimeError(
+                "Quell-Backfill abgebrochen; lokale Quelldatei änderte sich unmittelbar "
+                "vor dem atomaren Austausch. Externe Änderung bleibt erhalten."
+            )
+        os.replace(temp_path, source_file)
+        source_swapped = True
+        if _sha256_file(source_file) != expected_backfill_digest:
+            raise RuntimeError(
+                "Quell-Backfill fehlgeschlagen; Quelldatei stimmt nach dem atomaren Austausch "
+                "nicht mit dem verifizierten Transaktionsstand überein."
+            )
+        if stat.S_IMODE(os.stat(source_file).st_mode) != source_mode:
+            raise RuntimeError(
+                "Quell-Backfill fehlgeschlagen; Dateiberechtigungen wurden "
+                "beim atomaren Austausch nicht erhalten."
+            )
+        verified_source = read_positions(source_file)
+        if not source.reset_index(drop=True).equals(
+            verified_source.reset_index(drop=True)
+        ):
+            raise RuntimeError(
+                "Quell-Backfill fehlgeschlagen; Read-back stimmt nicht mit dem "
+                "Transaktionsstand überein."
+            )
+        os.remove(backup_path)
+    except Exception as original_exc:
+        if backup_complete and os.path.exists(backup_path):
+            if source_swapped:
+                try:
+                    current_digest = _sha256_file(source_file)
+                except OSError:
+                    current_digest = None
+                if current_digest != expected_backfill_digest:
+                    preserve_backup = True
+                    raise RuntimeError(
+                        "Quell-Backfill fehlgeschlagen; Rollback abgebrochen, weil "
+                        "die Quelldatei seit dem eigenen Austausch extern verändert "
+                        "wurde. Fremdänderung bleibt erhalten; Original-Backup "
+                        f"bleibt erhalten unter '{backup_path}'."
+                    ) from original_exc
+                if _sha256_file(backup_path) != backup_digest:
+                    preserve_backup = True
+                    raise RuntimeError(
+                        "Quell-Backfill fehlgeschlagen; Original-Backup ist nicht "
+                        "mehr byteidentisch und bleibt zur Diagnose erhalten unter "
+                        f"'{backup_path}'."
+                    ) from original_exc
+                try:
+                    # Best-effort compare-before-restore. Lokale Dateisysteme
+                    # bieten hier kein portables atomisches Hash-CAS; das kurze
+                    # Zeitfenster wird durch die unmittelbar vorherige Prüfung
+                    # minimiert und als Restrisiko dokumentiert.
+                    if _sha256_file(source_file) != expected_backfill_digest:
+                        raise RuntimeError("Quelldatei änderte sich unmittelbar vor Restore.")
+                    os.replace(backup_path, source_file)
+                except Exception as restore_exc:
+                    preserve_backup = True
+                    raise RuntimeError(
+                        "Quell-Backfill fehlgeschlagen; konfliktbewusster Rollback "
+                        "konnte nicht abgeschlossen werden. Original-Backup bleibt "
+                        f"erhalten unter '{backup_path}'. Ursache: {restore_exc}"
+                    ) from restore_exc
+            elif _sha256_file(source_file) != backup_digest:
+                preserve_backup = True
+                raise RuntimeError(
+                    "Quell-Backfill fehlgeschlagen; Quelle weicht vom gesicherten "
+                    "Original ab. Backup bleibt erhalten unter "
+                    f"'{backup_path}'."
+                ) from original_exc
+        raise
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        if not preserve_backup and os.path.exists(backup_path):
+            try:
+                os.remove(backup_path)
+            except OSError:
+                pass
+
+    print(
+        "QUELL-KURSBACKFILL: fehlende Kurs-/Performancewerte ergänzt | "
+        f"Positionen={changed_rows} | Zellen={changed_cells} | "
+        "bestehende Werte und Positionsparameter unverändert."
+    )
+    return changed_rows
+
+
 def _closed_position_keys(closed_df: pd.DataFrame) -> list[tuple]:
     """Liefert eindeutige Schlüssel der aktuell zu archivierenden Positionen."""
     if closed_df is None or closed_df.empty:
@@ -3649,7 +4041,65 @@ def _closed_position_keys(closed_df: pd.DataFrame) -> list[tuple]:
     return keys
 
 
-def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
+def _load_drive_source_baseline(source_file: str) -> dict:
+    """Load the exact Drive version written by the immediately preceding tracker."""
+    try:
+        with open(DRIVE_BASELINE_FILE, "r", encoding="utf-8") as handle:
+            baseline = json.load(handle)
+    except Exception as exc:
+        raise RuntimeError(
+            "Drive-Sicherheitsabbruch: Tracker-Remote-Baseline fehlt oder ist "
+            f"unlesbar ({DRIVE_BASELINE_FILE})."
+        ) from exc
+    required = {"schema_version", "file_id", "version", "modified_time", "mime_type", "local_source_sha256"}
+    if not isinstance(baseline, dict) or not required.issubset(baseline) or baseline.get("schema_version") != 1:
+        raise RuntimeError("Drive-Sicherheitsabbruch: Remote-Baseline hat ein ungültiges Schema.")
+    if not baseline.get("file_id") or baseline.get("version") in (None, "") or not baseline.get("modified_time"):
+        raise RuntimeError("Drive-Sicherheitsabbruch: Remote-Baseline enthält keine belastbare Version.")
+    local_digest = _sha256_file(source_file)
+    if local_digest != baseline.get("local_source_sha256"):
+        raise RuntimeError(
+            "Drive-Sicherheitsabbruch: lokale Positionsdatei stimmt nicht mehr mit "
+            "dem beim Tracker-Upload gesicherten Stand überein."
+        )
+    return baseline
+
+
+def _drive_metadata_matches(metadata: dict, baseline: dict) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    return (
+        str(metadata.get("id")) == str(baseline.get("file_id"))
+        and str(metadata.get("version")) == str(baseline.get("version"))
+        and str(metadata.get("modifiedTime")) == str(baseline.get("modified_time"))
+        and str(metadata.get("mimeType")) == str(baseline.get("mime_type"))
+        and (not baseline.get("md5_checksum") or str(metadata.get("md5Checksum") or "") == str(baseline.get("md5_checksum")))
+    )
+
+
+def _verify_drive_source_baseline_with_service(drive, baseline: dict) -> dict:
+    metadata = drive.files().get(
+        fileId=baseline["file_id"],
+        fields="id,name,mimeType,parents,version,modifiedTime,md5Checksum,trashed",
+    ).execute()
+    if metadata.get("trashed") or not _drive_metadata_matches(metadata, baseline):
+        raise RuntimeError(
+            "Drive-Konflikt: Die Positionsquelle wurde seit dem Tracker-Upload "
+            "extern geändert oder ersetzt. Der alte lokale Stand wird nicht "
+            "hochgeladen; die aktuelle Drive-Datei bleibt unangetastet."
+        )
+    return metadata
+
+
+def _verify_drive_source_baseline(creds, baseline: dict) -> dict:
+    drive = build("drive", "v3", credentials=creds)
+    return _verify_drive_source_baseline_with_service(drive, baseline)
+
+
+def _sync_cleaned_source_to_drive(
+    source_file: str, creds, expected_drive_state: Optional[dict] = None,
+    expected_local_sha256: Optional[str] = None,
+) -> None:
     """Persistiert die bereits lokal bereinigte Quelle sicher im Drive-Master.
 
     Die neue Google-Sheet-Datei wird zunächst unter einem temporären Namen
@@ -3665,8 +4115,20 @@ def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
             "synchronisiert werden: keine Google-Credentials vorhanden."
         )
 
+    if not isinstance(expected_drive_state, dict):
+        raise RuntimeError(
+            "Drive-Synchronisierung verweigert: kein beim Tracker-Upload "
+            "erfasster Remote-Baseline-Stand vorhanden."
+        )
+    if not expected_local_sha256 or _sha256_file(source_file) != expected_local_sha256:
+        raise RuntimeError(
+            "Drive-Synchronisierung verweigert: lokale Positionsdatei änderte sich "
+            "vor dem Upload gegenüber dem freigegebenen Transaktionsstand."
+        )
     drive = build("drive", "v3", credentials=creds)
     sheets = build("sheets", "v4", credentials=creds)
+
+    _verify_drive_source_baseline_with_service(drive, expected_drive_state)
 
     q = (
         "(name='Offene_Positionen' or name='Offene_Positionen.csv') "
@@ -3674,7 +4136,7 @@ def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
     )
     files = drive.files().list(
         q=q,
-        fields="files(id,name,mimeType,parents)",
+        fields="files(id,name,mimeType,parents,version,modifiedTime,md5Checksum)",
     ).execute().get("files", [])
 
     sheet_files = [
@@ -3690,6 +4152,11 @@ def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
             "es wird keine Datei willkürlich ausgewählt."
         )
     old_file = sheet_files[0] if sheet_files else (files[0] if files else None)
+    if old_file is None or str(old_file.get("id")) != str(expected_drive_state.get("file_id")):
+        raise RuntimeError(
+            "Drive-Sicherheitsabbruch: Die aktuelle Quelldatei entspricht nicht "
+            "der beim Tracker-Upload erfassten Datei-ID. Keine Datei wird ersetzt."
+        )
 
     # Die exakt bereinigte CSV als Zellmatrix lesen.
     with open(source_file, "r", encoding="utf-8-sig", newline="") as fh:
@@ -3698,11 +4165,17 @@ def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
         raise RuntimeError(
             "Bereinigte Offene_Positionen.csv ist leer; Drive-Synchronisierung abgebrochen."
         )
+    if _sha256_file(source_file) != expected_local_sha256:
+        raise RuntimeError(
+            "Drive-Synchronisierung abgebrochen: lokale Quelldatei änderte sich "
+            "während des Einlesens; externe Änderung bleibt erhalten."
+        )
 
     stamp = dt.datetime.now().strftime("%Y%m%d%H%M%S%f")
     temp_name = f"Offene_Positionen.__SYNC_{stamp}"
-    backup_name = f"Offene_Positionen.__BACKUP_{stamp}"
+    backup_name = None
 
+    old_id = old_file["id"] if old_file is not None else None
     temp_id = None
     backup_id = None
     swapped = False
@@ -3752,16 +4225,25 @@ def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
                 "bereinigten CSV überein."
             )
 
+        # Unmittelbar vor dem Remote-Swap müssen sowohl die beim Tracker-Upload
+        # gespeicherte Drive-Version als auch der lokale Transaktionsstand stimmen.
+        if _sha256_file(source_file) != expected_local_sha256:
+            raise RuntimeError(
+                "Drive-Synchronisierung abgebrochen: lokale Quelldatei änderte sich "
+                "vor dem Remote-Swap; externe Änderung bleibt erhalten."
+            )
+        _verify_drive_source_baseline_with_service(drive, expected_drive_state)
+
         # Erst jetzt den produktiven Namen freimachen. Die alte Quelle bleibt
         # unter einem Backup-Namen erhalten, bis der neue Stand verifiziert ist.
         if old_file is not None:
-            old_id = old_file["id"]
-            drive.files().update(
-                fileId=old_id,
-                body={"name": backup_name},
-                fields="id,name",
-            ).execute()
+            archived = archive_drive_backup(
+                drive, old_id, FOLDER_ID,
+                prefix="Offene_Positionen.__BACKUP_",
+                expected_revision=expected_drive_state,
+            )
             backup_id = old_id
+            backup_name = archived["name"]
 
         drive.files().update(
             fileId=temp_id,
@@ -3805,47 +4287,135 @@ def _sync_cleaned_source_to_drive(source_file: str, creds) -> None:
                 "Nachkontrolle der produktiven Drive-Quelldatei fehlgeschlagen."
             )
 
-        # Die bisherige Quelle bleibt dauerhaft als Backup erhalten.
+        # Die bisherige Quelle bleibt mindestens 14 Tage als markiertes
+        # Backup erhalten. Nur eindeutig markierte, abgelaufene Backups werden
+        # nach erfolgreicher Verifikation des neuen Masters bereinigt.
         if backup_id:
-            print(f"DATENSCHUTZ: Drive-Quellbackup bleibt dauerhaft erhalten | ID={backup_id}")
+            print(
+                "DATENSCHUTZ: Drive-Quellbackup 14 Tage aufbewahren | "
+                f"ID={backup_id} | Name={backup_name}"
+            )
+        try:
+            cleanup = cleanup_expired_drive_backups(drive, FOLDER_ID)
+            if cleanup["deleted_ids"]:
+                print(
+                    "DRIVE-BACKUP-RETENTION: Abgelaufene Backups gelöscht | "
+                    f"Anzahl={len(cleanup['deleted_ids'])}"
+                )
+        except Exception as cleanup_error:
+            # Retention cleanup must never roll back a successfully verified
+            # master swap. A failed cleanup only extends retention.
+            print(
+                "WARNUNG: 14-Tage-Backup-Bereinigung fehlgeschlagen; "
+                f"Backups bleiben sicherheitshalber erhalten: {cleanup_error}"
+            )
 
         print(
             "GOOGLE DRIVE QUELLE AKTUALISIERT: Offene_Positionen | "
             f"Datei-ID={temp_id} | Zeilen={len(values)}"
         )
 
-    except Exception:
-        # Die neue Datei darf bei einem Fehler nie als zusätzlicher produktiver
-        # Stand zurückbleiben – unabhängig davon, ob der Namens-Swap bereits
-        # erfolgt ist.
-        if temp_id:
+    except Exception as original_exc:
+        try:
+            _reconcile_failed_drive_source_swap(drive, old_id, temp_id)
+        except Exception as reconcile_exc:
+            raise RuntimeError(
+                "Drive-Synchronisierung fehlgeschlagen; der tatsächliche "
+                "Remote-Zustand konnte nicht sicher reconciliert werden. "
+                "Dateien bleiben zur manuellen Abstimmung erhalten: "
+                f"{reconcile_exc}"
+            ) from original_exc
+        raise
+
+
+def _reconcile_failed_drive_source_swap(drive, old_id: Optional[str], temp_id: Optional[str]) -> None:
+    """Reconcile an ambiguous Drive rename/swap using immutable file IDs.
+
+    Never delete a candidate based solely on whether an API response was
+    received. Unknown states are preserved for manual reconciliation.
+    """
+    def _remote_state(file_id):
+        if not file_id:
+            return None
+        try:
+            return drive.files().get(
+                fileId=file_id,
+                fields="id,name,mimeType,parents,appProperties,trashed,version,modifiedTime,md5Checksum",
+            ).execute()
+        except Exception:
+            return None
+
+    old_state = _remote_state(old_id)
+    temp_state = _remote_state(temp_id)
+    old_is_original = bool(
+        old_state and not old_state.get("trashed")
+        and old_state.get("name") in {"Offene_Positionen", "Offene_Positionen.csv"}
+    )
+    old_is_marked_backup = bool(
+        old_state and not old_state.get("trashed")
+        and str(old_state.get("name") or "").startswith("Offene_Positionen.__BACKUP_")
+        and (old_state.get("appProperties") or {}).get("nmm_backup_purpose") == "positions-master-v1"
+    )
+    temp_is_sync = bool(
+        temp_state and not temp_state.get("trashed")
+        and str(temp_state.get("name") or "").startswith("Offene_Positionen.__SYNC_")
+    )
+    temp_is_master = bool(
+        temp_state and not temp_state.get("trashed")
+        and temp_state.get("name") == "Offene_Positionen"
+    )
+
+    if temp_is_master and old_is_marked_backup:
+        raise RuntimeError(
+            "Der neue Master wurde serverseitig bereits aktiviert, die "
+            "Abschlussprüfung meldete jedoch einen Fehler. Beide Dateien "
+            "bleiben erhalten (neuer Master=%s, Backup=%s); manuelle Abstimmung erforderlich."
+            % (temp_id, old_id)
+        )
+
+    if old_is_marked_backup and temp_is_sync:
+        try:
+            drive.files().update(
+                fileId=old_id,
+                body={"name": "Offene_Positionen"},
+                fields="id,name",
+            ).execute()
+            restored = _remote_state(old_id)
+            if not (
+                restored and restored.get("name") == "Offene_Positionen"
+                and not restored.get("trashed")
+            ):
+                raise RuntimeError("Rückbenennung der alten Drive-Quelle nicht verifizierbar.")
+            old_is_original = True
+        except Exception as restore_exc:
+            raise RuntimeError(
+                "Alte Quelle wurde möglicherweise archiviert, konnte aber "
+                f"nicht sicher wiederhergestellt werden: {restore_exc}"
+            ) from restore_exc
+
+    if old_is_original and temp_is_sync:
+        latest_temp = _remote_state(temp_id)
+        if latest_temp and str(latest_temp.get("name") or "").startswith("Offene_Positionen.__SYNC_"):
             try:
                 drive.files().delete(fileId=temp_id).execute()
             except Exception:
+                # The temporary upload remains recoverable; never hide the
+                # original sync failure by deleting or retrying blindly.
                 pass
-
-        # Wenn die alte Datei bereits auf Backup umbenannt wurde, den
-        # produktiven Namen zurücksetzen.
-        if backup_id:
-            try:
-                drive.files().update(
-                    fileId=backup_id,
-                    body={"name": "Offene_Positionen"},
-                    fields="id,name",
-                ).execute()
-            except Exception as restore_exc:
-                raise RuntimeError(
-                    "Drive-Synchronisierung fehlgeschlagen und die alte "
-                    f"Quelldatei konnte nicht zurückbenannt werden: {restore_exc}"
-                ) from restore_exc
-
-        raise
+    elif temp_id and not (old_is_original or old_is_marked_backup or temp_is_master):
+        raise RuntimeError(
+            "Remote-Zustand ist nicht eindeutig. Temporäre Datei und mögliche "
+            "alte Quelle bleiben zur manuellen Abstimmung erhalten."
+        )
 
 
 def _remove_closed_from_source(
     source_file: str,
     closed_df: pd.DataFrame,
     drive_creds=None,
+    sync_status: Optional[dict] = None,
+    snapshot_path: Optional[str] = None,
+    expected_drive_state: Optional[dict] = None,
 ) -> int:
     """Entfernt geschlossene Positionen atomar aus der Quelldatei.
 
@@ -3855,7 +4425,23 @@ def _remove_closed_from_source(
     if closed_df is None or closed_df.empty:
         return 0
 
+    if snapshot_path:
+        _assert_source_matches_known_snapshot_state(snapshot_path, source_file)
+    source_digest_before_read = _sha256_file(source_file)
+    source_stat_before_read = os.stat(source_file)
     source = read_positions(source_file)
+    source_stat_after_read = os.stat(source_file)
+    if (
+        _sha256_file(source_file) != source_digest_before_read
+        or source_stat_after_read.st_size != source_stat_before_read.st_size
+        or source_stat_after_read.st_mtime_ns != source_stat_before_read.st_mtime_ns
+    ):
+        raise RuntimeError(
+            "Archivierung abgebrochen: lokale Positionsquelle änderte sich während "
+            "des Einlesens; externe Änderung bleibt erhalten."
+        )
+    if snapshot_path:
+        _assert_source_matches_known_snapshot_state(snapshot_path, source_file)
     if "Name" not in source.columns or "Einstieg" not in source.columns or "Einstiegsdatum" not in source.columns:
         raise RuntimeError(
             "Offene_Positionen.csv enthält nicht alle Felder für den sicheren Positionsschlüssel."
@@ -3959,6 +4545,11 @@ def _remove_closed_from_source(
         directory, f".{stem}.bak_{dt.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     )
 
+    source_mode = stat.S_IMODE(os.stat(source_file).st_mode)
+    source_swapped = False
+    expected_cleaned_digest = None
+    backup_digest = None
+    preserve_backup = False
     try:
         # Temporär schreiben und sofort wieder einlesen.
         remaining.to_csv(
@@ -3987,9 +4578,41 @@ def _remove_closed_from_source(
         # Sicherung der Originaldatei im selben Dateisystem.
         import shutil
         shutil.copy2(source_file, backup_path)
+        backup_digest = _sha256_file(backup_path)
+        # Preserve the source permissions rather than inheriting the temp
+        # file's default mode (which depends on umask).
+        os.chmod(temp_path, source_mode)
 
-        # Erst jetzt erfolgt der atomare Austausch.
+        # Erst jetzt erfolgt der atomare Austausch. Ein zwischenzeitlicher
+        # lokaler Fremd-Edit darf nicht durch die vorbereitete Datei ersetzt werden.
+        source_digest_before_swap = _sha256_file(source_file)
+        if _sha256_file(backup_path) != source_digest_before_swap:
+            raise RuntimeError(
+                "Sicherheitsabbruch: lokale Quelldatei änderte sich während der "
+                "Archivierung; externe Änderung bleibt erhalten."
+            )
+        expected_cleaned_digest = _sha256_file(temp_path)
+        if snapshot_path:
+            _register_snapshot_source_state(
+                snapshot_path, expected_cleaned_digest, source_mode
+            )
+        if _sha256_file(source_file) != source_digest_before_swap:
+            raise RuntimeError(
+                "Sicherheitsabbruch: lokale Quelldatei änderte sich unmittelbar "
+                "vor dem atomaren Archivierungs-Austausch."
+            )
         os.replace(temp_path, source_file)
+        source_swapped = True
+        if _sha256_file(source_file) != expected_cleaned_digest:
+            raise RuntimeError(
+                "Nachkontrolle fehlgeschlagen: atomar eingesetzte Quelldatei "
+                "weicht vom vorbereiteten Archivierungsstand ab."
+            )
+        if stat.S_IMODE(os.stat(source_file).st_mode) != source_mode:
+            raise RuntimeError(
+                "Nachkontrolle fehlgeschlagen: Dateiberechtigungen der "
+                "Quelldatei wurden nicht erhalten."
+            )
 
         # Nachkontrolle des tatsächlich ersetzten Originals.
         verified = read_positions(source_file)
@@ -4016,26 +4639,67 @@ def _remove_closed_from_source(
         # 'Offene_Positionen' synchronisiert. Scheitert die Synchronisierung,
         # greift der bestehende Except-Block und stellt die lokale Quelle aus
         # dem Backup wieder her.
-        _sync_cleaned_source_to_drive(source_file, drive_creds)
+        if sync_status is not None:
+            sync_status["attempted"] = True
+        _sync_cleaned_source_to_drive(
+            source_file, drive_creds, expected_drive_state=expected_drive_state,
+            expected_local_sha256=expected_cleaned_digest,
+        )
+        if sync_status is not None:
+            sync_status["completed"] = True
 
-        os.remove(backup_path)
+        # Remote commit is already verified. A local backup unlink failure is
+        # housekeeping only and must not trigger rollback to a stale local
+        # source while Drive contains the cleaned master.
+        try:
+            os.remove(backup_path)
+        except OSError as cleanup_error:
+            preserve_backup = True
+            print(
+                "WARNUNG: Drive-Synchronisierung ist abgeschlossen, aber das "
+                "lokale Transaktionsbackup konnte nicht entfernt werden und "
+                f"bleibt zur manuellen Bereinigung erhalten: {backup_path} | "
+                f"{cleanup_error}"
+            )
         print(
             f"QUELLDATEI BEREINIGT: {len(removable_keys)} aktuell vorhandene gestoppte/verkaufte Position(en) "
             "nach erfolgreicher Historien-/Google-Übergabe entfernt."
         )
         return len(removable_keys)
 
-    except Exception:
-        # Vor dem atomaren Austausch bleibt source ohnehin unverändert.
-        # Falls der Austausch bereits erfolgt ist, stellt die Sicherung den
-        # vorherigen Stand atomar wieder her.
-        if os.path.exists(backup_path):
+    except Exception as original_exc:
+        # Niemals eine Datei zurücksetzen, die nach unserem atomaren Austausch
+        # inzwischen von einem anderen Prozess geändert wurde.
+        if source_swapped and os.path.exists(backup_path):
             try:
-                os.replace(backup_path, source_file)
-                print("SICHERHEIT: Offene_Positionen.csv auf den vorherigen Stand zurückgesetzt.")
-            except Exception as restore_exc:
+                current_digest = _sha256_file(source_file)
+            except OSError:
+                current_digest = None
+            if current_digest != expected_cleaned_digest:
+                preserve_backup = True
                 raise RuntimeError(
-                    f"Fehler beim Zurücksetzen von Offene_Positionen.csv: {restore_exc}"
+                    "Archivierung fehlgeschlagen; Rollback abgebrochen, weil "
+                    "Offene_Positionen.csv seit dem eigenen Austausch extern "
+                    "verändert wurde. Fremdänderung bleibt erhalten; Original-"
+                    f"Backup bleibt erhalten unter '{backup_path}'."
+                ) from original_exc
+            if _sha256_file(backup_path) != backup_digest:
+                preserve_backup = True
+                raise RuntimeError(
+                    "Archivierung fehlgeschlagen; Original-Backup ist nicht "
+                    "byteidentisch und bleibt erhalten unter "
+                    f"'{backup_path}'."
+                ) from original_exc
+            try:
+                if _sha256_file(source_file) != expected_cleaned_digest:
+                    raise RuntimeError("Quelldatei änderte sich unmittelbar vor Restore.")
+                os.replace(backup_path, source_file)
+                print("SICHERHEIT: Offene_Positionen.csv konfliktbewusst zurückgesetzt.")
+            except Exception as restore_exc:
+                preserve_backup = True
+                raise RuntimeError(
+                    "Fehler beim konfliktbewussten Zurücksetzen von "
+                    f"Offene_Positionen.csv; Backup bleibt erhalten: {restore_exc}"
                 ) from restore_exc
         if os.path.exists(temp_path):
             try:
@@ -4043,6 +4707,12 @@ def _remove_closed_from_source(
             except OSError:
                 pass
         raise
+    finally:
+        if not preserve_backup and os.path.exists(backup_path):
+            try:
+                os.remove(backup_path)
+            except OSError:
+                pass
 
 
 def _selftest_closed_position_removal():
@@ -4207,19 +4877,395 @@ def _selftest_closed_position_removal():
     print("SELFTEST Archivierung geschlossener Positionen: PASS")
 
 
-def main():
-    output, closed_history = run_local(INPUT_FILE, OUTPUT_CSV)
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_manifest_path(snapshot_path: str) -> str:
+    return snapshot_path + ".manifest.json"
+
+
+def _atomic_write_json(path: str, payload: dict) -> None:
+    """Persist recovery metadata atomically in the same directory."""
+    import tempfile
+
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory
+    )
     try:
-        creds = google_credentials()
-        upsert_google_sheet(output, closed_history, creds)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        try:
+            dir_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def _read_snapshot_manifest(snapshot_path: str) -> dict:
+    manifest_path = _snapshot_manifest_path(snapshot_path)
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
     except Exception as exc:
-        print(f"FEHLER: Google Drive/Sheets konnte nicht aktualisiert werden: {exc}")
-        print("ABBRUCH: Lokale Dateien erstellt, Google Sheet nicht erfolgreich aktualisiert.")
+        raise RuntimeError(
+            "Persistentes Rollback-Manifest fehlt oder ist unlesbar; "
+            f"Snapshot bleibt erhalten: {snapshot_path}"
+        ) from exc
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        raise RuntimeError(
+            "Rollback-Manifest hat ein unbekanntes Schema; "
+            f"Snapshot bleibt erhalten: {snapshot_path}"
+        )
+    if os.path.abspath(manifest.get("snapshot_path", "")) != os.path.abspath(snapshot_path):
+        raise RuntimeError("Rollback-Manifest verweist auf einen anderen Snapshot.")
+    return manifest
+
+
+def _write_snapshot_manifest(snapshot_path: str, manifest: dict) -> None:
+    _atomic_write_json(_snapshot_manifest_path(snapshot_path), manifest)
+
+
+def _register_snapshot_source_state(
+    snapshot_path: str, source_digest: str, source_mode: int
+) -> None:
+    """Add a transaction-produced local state that outer rollback may replace."""
+    manifest = _read_snapshot_manifest(snapshot_path)
+    states = manifest.setdefault("allowed_source_states", [])
+    state = {"sha256": str(source_digest), "mode": int(source_mode)}
+    if state not in states:
+        states.append(state)
+        _write_snapshot_manifest(snapshot_path, manifest)
+
+
+def _assert_source_matches_known_snapshot_state(snapshot_path: str, source_file: str) -> None:
+    manifest = _read_snapshot_manifest(snapshot_path)
+    current = {
+        "sha256": _sha256_file(source_file),
+        "mode": stat.S_IMODE(os.stat(source_file).st_mode),
+    }
+    if current not in manifest.get("allowed_source_states", []):
+        raise RuntimeError(
+            "Lokaler Transaktionskonflikt: Offene_Positionen.csv wurde außerhalb "
+            "des bekannten Workflow-Schreibpfads geändert; Verarbeitung wird "
+            "abgebrochen und die Fremdänderung bleibt erhalten."
+        )
+
+
+def _snapshot_source_file(source_file: str) -> str:
+    """Create a verified snapshot and durable independent recovery manifest."""
+    import shutil
+    import tempfile
+
+    if not os.path.isfile(source_file):
+        raise FileNotFoundError(
+            f"Pflicht-Snapshot nicht möglich; Quelldatei fehlt oder ist keine Datei: {source_file}"
+        )
+
+    directory = os.path.dirname(os.path.abspath(source_file)) or "."
+    fd, snapshot_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(source_file)}.google_rollback_",
+        suffix=".bak", dir=directory,
+    )
+    os.close(fd)
+    manifest_path = _snapshot_manifest_path(snapshot_path)
+    try:
+        source_stat_before = os.stat(source_file)
+        digest_before = _sha256_file(source_file)
+        shutil.copy2(source_file, snapshot_path)
+        digest_snapshot = _sha256_file(snapshot_path)
+        digest_after = _sha256_file(source_file)
+        source_stat_after = os.stat(source_file)
+        source_mode = stat.S_IMODE(source_stat_before.st_mode)
+        stable_source = (
+            source_stat_before.st_size == source_stat_after.st_size
+            and source_stat_before.st_mtime_ns == source_stat_after.st_mtime_ns
+            and source_mode == stat.S_IMODE(source_stat_after.st_mode)
+        )
+        if not stable_source or not (digest_before == digest_snapshot == digest_after):
+            raise RuntimeError(
+                "Lokaler Rollback-Snapshot konnte nicht bytegenau/stabil verifiziert werden."
+            )
+        if stat.S_IMODE(os.stat(snapshot_path).st_mode) != source_mode:
+            raise RuntimeError("Lokaler Rollback-Snapshot hat die POSIX-Modusbits nicht erhalten.")
+        with open(snapshot_path, "rb") as snapshot_handle:
+            os.fsync(snapshot_handle.fileno())
+        manifest = {
+            "schema_version": 1,
+            "snapshot_path": os.path.abspath(snapshot_path),
+            "source_path": os.path.abspath(source_file),
+            "original_sha256": digest_before,
+            "source_mode": source_mode,
+            "allowed_source_states": [{"sha256": digest_before, "mode": source_mode}],
+            "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        _write_snapshot_manifest(snapshot_path, manifest)
+        return snapshot_path
+    except Exception:
+        for candidate in (snapshot_path, manifest_path):
+            try:
+                os.remove(candidate)
+            except OSError:
+                pass
         raise
 
-    # Erst nach erfolgreicher lokaler Historienerzeugung UND erfolgreichem
-    # Google-Sheet-Update darf die Quelldatei bereinigt werden.
-    removed = _remove_closed_from_source(INPUT_FILE, closed_history, drive_creds=creds)
+
+def _restore_source_file_snapshot(snapshot_path: Optional[str], source_file: str) -> None:
+    """Restore only over a known transaction state; never erase a foreign edit."""
+    import shutil
+    import tempfile
+
+    if not snapshot_path or not os.path.isfile(snapshot_path):
+        raise RuntimeError(
+            "Lokaler Rollback-Snapshot fehlt; Wiederherstellung nicht möglich: "
+            f"{snapshot_path or '(kein Pfad)'}"
+        )
+    manifest = _read_snapshot_manifest(snapshot_path)
+    if os.path.abspath(manifest.get("source_path", "")) != os.path.abspath(source_file):
+        raise RuntimeError("Rollback-Manifest gehört zu einer anderen Quelldatei.")
+    expected_digest = str(manifest.get("original_sha256", ""))
+    expected_mode = int(manifest.get("source_mode", -1))
+    if (
+        _sha256_file(snapshot_path) != expected_digest
+        or stat.S_IMODE(os.stat(snapshot_path).st_mode) != expected_mode
+    ):
+        raise RuntimeError(
+            "Rollback-Snapshot stimmt nicht mit dem persistenten SHA-256-/"
+            "Berechtigungsmanifest überein; Wiederherstellung verweigert, "
+            f"Snapshot bleibt erhalten: {snapshot_path}"
+        )
+
+    if not os.path.isfile(source_file):
+        raise RuntimeError(
+            "Aktuelle Quelldatei fehlt; sicherer Rollback ohne Überschreiben "
+            f"eines unbekannten Zustands nicht möglich. Snapshot bleibt: {snapshot_path}"
+        )
+    current_state = {
+        "sha256": _sha256_file(source_file),
+        "mode": stat.S_IMODE(os.stat(source_file).st_mode),
+    }
+    allowed_states = manifest.get("allowed_source_states", [])
+    if current_state not in allowed_states:
+        raise RuntimeError(
+            "Rollback-Konflikt: Offene_Positionen.csv wurde seit dem letzten "
+            "bekannten Transaktionsstand extern verändert. Fremdänderung wird "
+            "nicht überschrieben; Snapshot und Manifest bleiben erhalten. "
+            f"Aktuell SHA256={current_state['sha256']} Modus={current_state['mode']}; "
+            f"Snapshot={snapshot_path}"
+        )
+
+    directory = os.path.dirname(os.path.abspath(source_file)) or "."
+    fd, restore_temp = tempfile.mkstemp(
+        prefix=f".{os.path.basename(source_file)}.rollback_restore_",
+        suffix=".tmp", dir=directory,
+    )
+    os.close(fd)
+    try:
+        shutil.copy2(snapshot_path, restore_temp)
+        if _sha256_file(restore_temp) != expected_digest:
+            raise RuntimeError("Temporäre Rollback-Kopie besteht die SHA-256-Prüfung nicht.")
+        if stat.S_IMODE(os.stat(restore_temp).st_mode) != expected_mode:
+            raise RuntimeError("Temporäre Rollback-Kopie hat die POSIX-Modusbits nicht erhalten.")
+        # Re-check immediately before replacement to close the validation/use race.
+        current_again = {
+            "sha256": _sha256_file(source_file),
+            "mode": stat.S_IMODE(os.stat(source_file).st_mode),
+        }
+        if current_again != current_state:
+            raise RuntimeError(
+                "Rollback-Konflikt: Quelldatei änderte sich während der Restore-Prüfung; "
+                "Fremdänderung bleibt erhalten."
+            )
+        with open(restore_temp, "rb") as restored_file:
+            os.fsync(restored_file.fileno())
+        os.replace(restore_temp, source_file)
+        actual_digest = _sha256_file(source_file)
+        actual_mode = stat.S_IMODE(os.stat(source_file).st_mode)
+        if actual_digest != expected_digest or actual_mode != expected_mode:
+            raise RuntimeError(
+                "Lokaler Rollback wurde eingesetzt, aber SHA-256-/Berechtigungs-"
+                f"Nachkontrolle fehlgeschlagen; Snapshot bleibt erhalten: {snapshot_path}"
+            )
+    finally:
+        if os.path.exists(restore_temp):
+            try:
+                os.remove(restore_temp)
+            except OSError:
+                pass
+
+
+def _discard_source_file_snapshot(snapshot_path: Optional[str]) -> None:
+    if not snapshot_path:
+        return
+    manifest_path = _snapshot_manifest_path(snapshot_path)
+    errors = []
+    for candidate in (snapshot_path, manifest_path):
+        if os.path.exists(candidate):
+            try:
+                os.remove(candidate)
+            except OSError as exc:
+                errors.append(f"{candidate}: {exc}")
+    if errors:
+        print(
+            "WARNUNG: Rollback-Snapshot/Manifest konnten nach erfolgreichem "
+            "Ablauf nicht vollständig entfernt werden: " + "; ".join(errors)
+        )
+
+def main():
+    # run_local() reads the source and writes only derived local output files.
+    # Establish the mandatory rollback point before any source mutation or
+    # Google Sheets/Drive write can occur.
+    source_snapshot = _snapshot_source_file(INPUT_FILE)
+    google_sheet_attempted = False
+    google_sheet_completed = False
+    google_master_id = None
+    drive_source_sync_attempted = False
+    drive_source_sync_completed = False
+    closed_source_sync_state = {"attempted": False, "completed": False}
+    try:
+        creds = google_credentials()
+        drive_baseline = _load_drive_source_baseline(INPUT_FILE)
+        _verify_drive_source_baseline(creds, drive_baseline)
+        output, closed_history = run_local(INPUT_FILE, OUTPUT_CSV)
+        source_backfill_rows = backfill_missing_market_data_to_source(
+            INPUT_FILE, output, snapshot_path=source_snapshot
+        )
+        _assert_source_matches_known_snapshot_state(source_snapshot, INPUT_FILE)
+        google_sheet_attempted = True
+        google_master_id = upsert_google_sheet(output, closed_history, creds)
+        google_sheet_completed = True
+        _assert_source_matches_known_snapshot_state(source_snapshot, INPUT_FILE)
+
+        # The Google master update and local/Drive source synchronization are
+        # separate remote operations, not one distributed transaction.
+        # The local snapshot can restore only INPUT_FILE; it cannot undo an
+        # already committed Sheets history append/tab swap or a Drive rename.
+        removed = _remove_closed_from_source(
+            INPUT_FILE, closed_history, drive_creds=creds,
+            sync_status=closed_source_sync_state,
+            snapshot_path=source_snapshot,
+            expected_drive_state=drive_baseline,
+        )
+        drive_source_sync_attempted = bool(closed_source_sync_state["attempted"])
+        drive_source_sync_completed = bool(closed_source_sync_state["completed"])
+
+        # If no closed source row was removed, synchronize the backfilled CSV.
+        if source_backfill_rows and removed == 0:
+            expected_local_digest = _sha256_file(INPUT_FILE)
+            _assert_source_matches_known_snapshot_state(source_snapshot, INPUT_FILE)
+            drive_source_sync_attempted = True
+            _sync_cleaned_source_to_drive(
+                INPUT_FILE, creds, expected_drive_state=drive_baseline,
+                expected_local_sha256=expected_local_digest,
+            )
+            drive_source_sync_completed = True
+            print(
+                "GOOGLE DRIVE QUELL-SYNC: Backfill der fehlenden Kurs-/Performancewerte "
+                "in Offene_Positionen bestätigt."
+            )
+    except Exception as exc:
+        # Preserve the state even if _remove_closed_from_source raises during Drive sync.
+        drive_source_sync_attempted = (
+            drive_source_sync_attempted or bool(closed_source_sync_state["attempted"])
+        )
+        drive_source_sync_completed = (
+            drive_source_sync_completed or bool(closed_source_sync_state["completed"])
+        )
+        try:
+            _restore_source_file_snapshot(source_snapshot, INPUT_FILE)
+        except Exception as restore_exc:
+            # _restore_source_file_snapshot never consumes the original snapshot.
+            raise RuntimeError(
+                "Google-/Drive-Ablauf fehlgeschlagen und die lokale Quelldatei "
+                "konnte nicht verifiziert wiederhergestellt werden. "
+                f"Rollback-Snapshot bleibt erhalten (Notfallkopie): {source_snapshot}. "
+                f"Ursache: {restore_exc}"
+            ) from restore_exc
+
+        # If no remote write was even attempted, the verified local restore is
+        # complete and the temporary snapshot can be cleaned up. Once a Sheets
+        # or Drive write has started, retain it for reconciliation/manual recovery.
+        if not google_sheet_attempted and not drive_source_sync_attempted:
+            _discard_source_file_snapshot(source_snapshot)
+            source_snapshot = None
+
+        remote_state = [
+            "LOKALER ROLLBACK: Offene_Positionen.csv wurde aus dem unveränderten "
+            "Notfall-Snapshot wiederhergestellt und SHA-256-/Modusbits-geprüft."
+        ]
+        if google_sheet_completed:
+            remote_state.append(
+                "GOOGLE SHEETS: Der Master-Update-Aufruf war erfolgreich. "
+                "Dieser lokale Rollback nimmt den bereits bestätigten Sheets-Stand "
+                f"nicht zurück (Master-ID: {google_master_id or 'vom Adapter nicht zurückgegeben'}). "
+                "Das von upsert_google_sheet angelegte Drive-Backup bleibt der separate Remote-Rollback-Punkt."
+            )
+        elif google_sheet_attempted:
+            remote_state.append(
+                "GOOGLE SHEETS: Der Update-Aufruf wurde begonnen, sein Remote-Endzustand "
+                "ist wegen des Fehlers nicht sicher bestimmbar. Der lokale Rollback "
+                "stellt Google Sheets nicht zurück; das interne Sheets-Backup ist separat zu prüfen."
+            )
+        else:
+            remote_state.append("GOOGLE SHEETS: Es wurde kein Master-Update begonnen.")
+        if drive_source_sync_completed:
+            remote_state.append(
+                "GOOGLE DRIVE QUELLE: Die Drive-Quellsynchronisierung war bereits "
+                "erfolgreich. Der lokale Rollback ändert diese Remote-Datei nicht; "
+                "das Drive-Quellbackup bleibt separat erhalten."
+            )
+        elif drive_source_sync_attempted:
+            remote_state.append(
+                "GOOGLE DRIVE QUELLE: Synchronisierung wurde begonnen, aber nicht "
+                "als erfolgreich bestätigt. Die Funktion versucht ihren eigenen "
+                "Drive-Namens-Rollback; Remote-Zustand muss separat kontrolliert werden."
+            )
+        else:
+            remote_state.append(
+                "GOOGLE DRIVE QUELLE: Keine separat erfolgreiche abschließende "
+                "Quell-Synchronisierung durch main() bestätigt."
+            )
+        if source_snapshot and os.path.isfile(source_snapshot):
+            remote_state.append(
+                "NOTFALL-SNAPSHOT: bleibt für die Remote-Abstimmung erhalten: "
+                f"{source_snapshot} | SHA256={_sha256_file(source_snapshot)}"
+            )
+        print("FEHLER: Google Drive/Sheets-Ablauf nicht vollständig: " + str(exc))
+        for state_line in remote_state:
+            print("TRANSAKTIONSGRENZE: " + state_line)
+        print(
+            "ABBRUCH: Nur die lokale Quelldatei wurde durch den äußeren Snapshot "
+            "zurückgesetzt. Es wird ausdrücklich kein vollständiger Google-Sheets-/"
+            "Drive-Rollback behauptet."
+        )
+        raise RuntimeError(
+            "Google-/Drive-Ablauf fehlgeschlagen; lokaler Rollback erfolgreich. "
+            "Remote-Schreibstände sind davon getrennt und müssen gemäß den "
+            f"TRANSAKTIONSGRENZE-Meldungen beurteilt werden. Ursache: {exc}"
+        ) from exc
+    else:
+        # The recovery point is discarded only after all requested operations
+        # returned successfully. A cleanup failure is logged, not fatal.
+        _discard_source_file_snapshot(source_snapshot)
 
     print("GOOGLE DRIVE: Offene Positionen+Check erfolgreich erstellt/aktualisiert.")
     print(

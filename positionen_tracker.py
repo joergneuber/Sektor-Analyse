@@ -2,6 +2,8 @@ import os
 import io
 import csv
 import json
+import hashlib
+import tempfile
 import datetime
 import re
 import smtplib
@@ -15,6 +17,11 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from positionen_sheet_upload import erstelle_sheet_upload_stream
 from positionen_datum import parse_position_date, reject_excel_date_serial_price
+from positions_drive_backups import (
+    DriveBackupArchiveMutationError,
+    archive_drive_backup,
+    cleanup_expired_drive_backups,
+)
 import yfinance as yf
 from scipy.signal import argrelextrema
 from google.oauth2.credentials import Credentials
@@ -36,6 +43,7 @@ DRIVE_NAME = 'Offene_Positionen'                # Anzeigename in Drive (native G
                                                  # in Sheets öffnen und bearbeiten lässt - keine separate
                                                  # Kopie mehr, wie es bei einer echten .csv-Datei passiert)
 DRIVE_NAME_ALT = 'Offene_Positionen.csv'        # Alter Name (Übergang von der ersten Version)
+DRIVE_BASELINE_FILE = '.offene_positionen_drive_baseline.json'
 SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
 XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 GOLD_FUTURES_TICKER = 'GC=F'  # Yahoo Finance: Gold Future (COMEX) / USD
@@ -356,15 +364,53 @@ def finde_datei(service, folder_id):
         f"(name='{DRIVE_NAME}' or name='{DRIVE_NAME_ALT}') "
         f"and '{folder_id}' in parents and trashed=false"
     )
-    ergebnis = service.files().list(q=query, fields="files(id, name, mimeType)").execute()
-    treffer = ergebnis.get('files', [])
+    treffer = []
+    page_token = None
+    while True:
+        ergebnis = service.files().list(
+            q=query,
+            pageSize=1000,
+            pageToken=page_token,
+            fields="nextPageToken,files(id,name,mimeType)",
+        ).execute()
+        treffer.extend(ergebnis.get('files', []))
+        page_token = ergebnis.get("nextPageToken")
+        if not page_token:
+            break
     if not treffer:
         return None, None
-    # Falls beide Namen existieren (Übergangsfall), das native Sheet bevorzugen
-    for f in treffer:
-        if f['mimeType'] == SHEET_MIME:
-            return f['id'], f['mimeType']
-    return treffer[0]['id'], treffer[0]['mimeType']
+
+    native_sheets = [f for f in treffer if f.get('mimeType') == SHEET_MIME]
+    if len(native_sheets) > 1:
+        ids = [str(f.get('id') or '<ohne ID>') for f in native_sheets]
+        raise RuntimeError(
+            "Mehrere aktive native Positionsmaster in Google Drive gefunden "
+            f"(IDs: {', '.join(ids)}). Auswahl wird fail-closed abgebrochen; "
+            "bitte den produktiven Master manuell eindeutig festlegen."
+        )
+
+    if len(treffer) == 1:
+        return treffer[0]['id'], treffer[0]['mimeType']
+
+    # Der einzige weiterhin erlaubte Mehrfachtreffer ist der dokumentierte
+    # Migrationsfall: genau ein natives Sheet plus genau eine alte CSV-Datei.
+    legacy_csv = [
+        f for f in treffer
+        if f.get('name') == DRIVE_NAME_ALT
+        and f.get('mimeType') in {"text/csv", "application/csv"}
+    ]
+    if (
+        len(native_sheets) == 1
+        and len(treffer) == 2
+        and len(legacy_csv) == 1
+    ):
+        return native_sheets[0]['id'], native_sheets[0]['mimeType']
+
+    ids = [str(f.get('id') or '<ohne ID>') for f in treffer]
+    raise RuntimeError(
+        "Mehrere aktive Dateien mit produktivem Positionsnamen in Google Drive "
+        f"gefunden (IDs: {', '.join(ids)}). Auswahl wird fail-closed abgebrochen."
+    )
 
 
 def _datum_vereinheitlichen(wert):
@@ -1922,7 +1968,74 @@ def _finde_upload_mit_token(service, folder_id, upload_token):
     return None
 
 
-def hochladen(service, lokale_datei, folder_id, alte_file_id):
+def _hole_drive_quellrevision(service, file_id):
+    if not file_id:
+        return None
+    metadata = service.files().get(
+        fileId=file_id,
+        fields='id,name,mimeType,version,modifiedTime,md5Checksum,trashed',
+    ).execute()
+    if metadata.get('trashed') or not metadata.get('version') or not metadata.get('modifiedTime'):
+        raise RuntimeError('Drive-Quellrevision konnte vor dem Tracker-Download nicht sicher erfasst werden.')
+    return {
+        'file_id': str(metadata['id']),
+        'version': str(metadata['version']),
+        'modified_time': str(metadata['modifiedTime']),
+        'mime_type': str(metadata.get('mimeType') or ''),
+        'md5_checksum': str(metadata.get('md5Checksum') or ''),
+    }
+
+
+def _pruefe_drive_quellrevision(service, expected_revision):
+    if not isinstance(expected_revision, dict):
+        raise RuntimeError('Drive-Konflikt: Offene_Positionen wurde seit dem Tracker-Download extern geändert oder die Revision fehlt; die bisherige Datei wird nicht gelöscht.')
+    actual = _hole_drive_quellrevision(service, expected_revision.get('file_id'))
+    if not actual or any(actual.get(key) != expected_revision.get(key) for key in (
+        'file_id', 'version', 'modified_time', 'mime_type', 'md5_checksum'
+    )):
+        raise RuntimeError(
+            'Drive-Konflikt: Offene_Positionen wurde seit dem Tracker-Download extern geändert. '
+            'Die bisherige Drive-Datei wird nicht gelöscht.'
+        )
+    return actual
+
+
+def _sicher_loesche_tracker_upload(service, file_id, folder_id, upload_token):
+    """Delete only the exact new master created by this tracker transaction.
+
+    A fresh metadata read must prove the upload token, expected name, MIME type,
+    parent folder, and non-trashed state. If any proof is unavailable, preserve
+    the file and fail closed rather than risk deleting another writer's data.
+    """
+    if not file_id or not upload_token:
+        raise RuntimeError("Tracker-Upload kann ohne Datei-ID und Upload-Token nicht sicher bereinigt werden.")
+
+    metadata = service.files().get(
+        fileId=file_id,
+        fields="id,name,mimeType,parents,appProperties,trashed",
+    ).execute()
+    properties = metadata.get("appProperties") or {}
+    if (
+        str(metadata.get("id") or "") != str(file_id)
+        or metadata.get("name") != DRIVE_NAME
+        or metadata.get("mimeType") != SHEET_MIME
+        or str(folder_id) not in {str(parent) for parent in metadata.get("parents", [])}
+        or metadata.get("trashed")
+        or properties.get("tracker_upload_token") != upload_token
+    ):
+        raise RuntimeError(
+            "Tracker-Konflikt-Upload wurde nicht eindeutig als eigene temporäre "
+            "Datei bestätigt und bleibt zur manuellen Prüfung erhalten."
+        )
+
+    service.files().delete(fileId=file_id).execute(num_retries=3)
+    print(
+        "Nicht aktivierter Tracker-Konflikt-Upload sicher entfernt "
+        f"(Datei-ID={file_id}, Upload-Token bestätigt)."
+    )
+
+
+def hochladen(service, lokale_datei, folder_id, alte_file_id, expected_old_revision=None, creds=None):
     """Lädt den Positionsstand fehlertolerant als natives Google Sheet hoch.
 
     Sicherheitsregeln:
@@ -1931,7 +2044,9 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
        geprüft, ob Drive den Upload bereits angenommen hat.
     3. Nur wenn kein bereits angelegter Upload gefunden wird, erfolgt ein
        begrenzter Retry mit exponentiellem Backoff.
-    4. Erst nach bestätigter Datei-ID wird die alte Datei gelöscht.
+    4. Erst nach bestätigter Datei-ID wird die alte Datei als 14-Tage-Backup
+       archiviert; abgelaufene, ausschließlich app-markierte Backups werden
+       anschließend best-effort bereinigt.
 
     Die Positions- und Managementlogik bleibt davon unberührt.
     """
@@ -2013,35 +2128,99 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
                 f"(ID: {neue_file_id}, Versuch {versuch}/{max_versuche})."
             )
 
-            # Alte Datei erst löschen, nachdem die neue Datei-ID bestätigt ist.
+            # Alte Datei erst archivieren, nachdem die neue Datei-ID bestätigt ist
+            # UND die beim Download erfasste Remote-Revision unverändert blieb.
             if alte_file_id and alte_file_id != neue_file_id:
                 try:
-                    service.files().delete(
-                        fileId=alte_file_id
-                    ).execute(num_retries=3)
-                    print(
-                        f"Alte Datei (ID: {alte_file_id}) "
-                        "nach erfolgreichem Upload gelöscht."
+                    _pruefe_drive_quellrevision(service, expected_old_revision)
+                except Exception as revision_error:
+                    raise RuntimeError(
+                        "Drive-Konflikt: Offene_Positionen wurde seit dem "
+                        "Tracker-Download extern geändert oder ist nicht mehr verfügbar. "
+                        "Die bisherige Drive-Datei wird nicht gelöscht."
+                    ) from revision_error
+                # Die bisherige Masterdatei wird niemals direkt gelöscht.
+                # Das Archivieren markiert sie eindeutig und startet die
+                # 14-Tage-Aufbewahrungsfrist.
+                try:
+                    archived = archive_drive_backup(
+                        service, alte_file_id, folder_id,
+                        expected_revision=expected_old_revision,
                     )
-                except Exception as delete_error:
-                    # Ein vorheriger Löschaufruf kann erfolgreich gewesen sein,
-                    # obwohl dessen Antwort ebenfalls im Timeout endete.
-                    # HTTP 404 beim Wiederholungsversuch bedeutet dann: bereits weg.
-                    delete_status = getattr(
-                        getattr(delete_error, 'resp', None), 'status', None
-                    )
-                    if delete_status == 404:
-                        print(
-                            f"Alte Datei (ID: {alte_file_id}) ist bereits gelöscht."
+                except DriveBackupArchiveMutationError as archive_error:
+                    # The rename request may already have reached Drive. Keep
+                    # both IDs untouched; deleting either file could destroy
+                    # the only current master. finde_datei() will reject any
+                    # resulting duplicate active masters on the next run.
+                    raise RuntimeError(
+                        "Drive-Backup-Umbenennung wurde angefordert, ihr "
+                        "Endzustand ist aber nicht sicher bestätigbar. Neue "
+                        "Datei und bisherige Datei bleiben unverändert erhalten; "
+                        "vor dem nächsten Lauf muss der Drive-Zustand manuell "
+                        "eindeutig geprüft werden."
+                    ) from archive_error
+                except Exception as archive_error:
+                    # The archive helper guarantees that ordinary exceptions
+                    # occur before its rename request. Remove only our own
+                    # upload, after re-verifying its transaction token.
+                    try:
+                        _sicher_loesche_tracker_upload(
+                            service, neue_file_id, folder_id, upload_token
                         )
-                    else:
-                        raise
+                    except Exception as cleanup_error:
+                        raise RuntimeError(
+                            "Drive-Backup wurde sicher vor einer Mutation "
+                            "abgebrochen, aber der neue Tracker-Upload konnte "
+                            "nicht eindeutig bereinigt werden. Beide Dateien "
+                            "bleiben erhalten; der nächste Lauf wird bei "
+                            "mehreren aktiven Mastern fail-closed abbrechen."
+                        ) from cleanup_error
+                    raise RuntimeError(
+                        "Drive-Backup wurde vor jeder Umbenennungs-Mutation "
+                        "abgebrochen. Der neue Tracker-Upload wurde entfernt; "
+                        "der bisherige Drive-Master blieb unverändert."
+                    ) from archive_error
+                print(
+                    f"Bisherige Drive-Datei als 14-Tage-Backup archiviert "
+                    f"(ID: {archived.get('id')}, Name: {archived.get('name')})."
+                )
 
             friere_erste_zwei_zeilen_ein(creds, neue_file_id)
+            # Capture the post-upload/post-formatting revision before returning
+            # control to the workflow; the next writer consumes this exact state.
+            speichere_drive_quell_baseline(service, neue_file_id, lokale_datei)
+            try:
+                cleanup = cleanup_expired_drive_backups(service, folder_id)
+                if cleanup["deleted_ids"]:
+                    print(
+                        "DRIVE-BACKUP-RETENTION: Abgelaufene Backups gelöscht | "
+                        f"Anzahl={len(cleanup['deleted_ids'])}"
+                    )
+            except Exception as cleanup_error:
+                # Retention cleanup is ancillary. Never undo a verified
+                # master replacement because an old-backup deletion failed.
+                print(
+                    "WARNUNG: 14-Tage-Backup-Bereinigung fehlgeschlagen; "
+                    f"Backups bleiben sicherheitshalber erhalten: {cleanup_error}"
+                )
             return neue_file_id
 
         except Exception as exc:
             letzte_fehler = exc
+            if "seit dem Tracker-Download extern geändert" in str(exc) and neue_datei:
+                konflikt_upload_id = neue_datei.get('id')
+                if konflikt_upload_id:
+                    try:
+                        _sicher_loesche_tracker_upload(
+                            service, konflikt_upload_id, folder_id, upload_token
+                        )
+                    except Exception as cleanup_exc:
+                        raise RuntimeError(
+                            "Drive-Revision-Konflikt erkannt; der neue Upload "
+                            "konnte nicht sicher entfernt werden und bleibt "
+                            f"zur manuellen Prüfung erhalten (ID={konflikt_upload_id})."
+                        ) from cleanup_exc
+                raise
             if not ist_temporaerer_fehler(exc) or versuch >= max_versuche:
                 raise
 
@@ -2058,11 +2237,75 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id):
     raise letzte_fehler
 
 
+def _sha256_local_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def speichere_drive_quell_baseline(service, file_id, lokale_datei=LOKALE_DATEI):
+    """Persistiert die Drive-Revision des gerade abgeschlossenen Tracker-Uploads.
+
+    Die nachgelagerte offene-Positionen-Prüfung darf die Quelle nur ersetzen,
+    wenn diese konkrete Drive-Revision seit dem Tracker-Upload unverändert ist.
+    """
+    metadata = service.files().get(
+        fileId=file_id,
+        fields='id,name,mimeType,parents,version,modifiedTime,md5Checksum,trashed',
+    ).execute()
+    if metadata.get('trashed') or not metadata.get('version') or not metadata.get('modifiedTime'):
+        raise RuntimeError(
+            'Drive-Quellrevision konnte nach dem Tracker-Upload nicht belastbar erfasst werden.'
+        )
+    payload = {
+        'schema_version': 1,
+        'file_id': str(metadata['id']),
+        'name': str(metadata.get('name') or ''),
+        'mime_type': str(metadata.get('mimeType') or ''),
+        'version': str(metadata['version']),
+        'modified_time': str(metadata['modifiedTime']),
+        'md5_checksum': str(metadata.get('md5Checksum') or ''),
+        'local_source_sha256': _sha256_local_file(lokale_datei),
+    }
+    directory = os.path.dirname(os.path.abspath(DRIVE_BASELINE_FILE)) or '.'
+    fd, temp_path = tempfile.mkstemp(prefix='.drive_baseline_', suffix='.tmp', dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True, indent=2)
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, DRIVE_BASELINE_FILE)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+    print(
+        'DRIVE-QUELLREVISION GESICHERT: '
+        f"Datei-ID={payload['file_id']} | Version={payload['version']}"
+    )
+    return payload
+
+
+def lade_drive_quell_baseline():
+    with open(DRIVE_BASELINE_FILE, 'r', encoding='utf-8') as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict) or payload.get('schema_version') != 1:
+        raise RuntimeError('Drive-Quellrevision-Baseline fehlt oder hat ein ungültiges Schema.')
+    return payload
+
+
 if __name__ == '__main__':
     print("Positions-Tracker gestartet...")
     service, creds = get_drive_service()
 
     file_id, mime_type = finde_datei(service, FOLDER_ID)
+    source_revision_before_download = _hole_drive_quellrevision(service, file_id)
     df = lade_positionen_herunter(service, file_id, mime_type)
     df = normalisiere_zahlen(df)
     df = normalisiere_daten(df)
@@ -2108,7 +2351,11 @@ if __name__ == '__main__':
     # und macht aus 175.14 eine Riesenzahl). Beim nächsten Einlesen wandelt
     # normalisiere_zahlen die Kommas wieder zurück in Punkte fuer Python.
     df.to_csv(LOKALE_DATEI, index=False, sep=';', encoding='utf-8-sig', decimal=',')
-    hochladen(service, LOKALE_DATEI, FOLDER_ID, file_id)
+    neue_file_id = hochladen(
+        service, LOKALE_DATEI, FOLDER_ID, file_id,
+        expected_old_revision=source_revision_before_download, creds=creds,
+    )
+    drive_baseline = lade_drive_quell_baseline()
 
     # Trigger-Mails erst nach dem erfolgreichen ersten Sheet-Upload senden.
     # So bleibt der Positionsstand auch bei einem SMTP-Problem gespeichert.
@@ -2146,6 +2393,14 @@ if __name__ == '__main__':
         if erfolgreich_gesendet:
             df.to_csv(LOKALE_DATEI, index=False, sep=';', encoding='utf-8-sig', decimal=',')
             file_id2, mime_type2 = finde_datei(service, FOLDER_ID)
-            hochladen(service, LOKALE_DATEI, FOLDER_ID, file_id2)
+            if not drive_baseline or str(file_id2) != str(drive_baseline.get('file_id')):
+                raise RuntimeError(
+                    'Drive-Konflikt vor Alert-Nachtrag: Positionsquelle wurde seit dem ersten Tracker-Upload ersetzt.'
+                )
+            neue_file_id2 = hochladen(
+                service, LOKALE_DATEI, FOLDER_ID, file_id2,
+                expected_old_revision=drive_baseline, creds=creds,
+            )
+            drive_baseline = lade_drive_quell_baseline()
 
     print("Positions-Tracker abgeschlossen.")
