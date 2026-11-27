@@ -718,74 +718,6 @@ def test_write_sheet_formats_all_position_dates_left_aligned():
         assert matching[0]["cell"]["userEnteredFormat"]["numberFormat"]["pattern"] == "dd.MM.yyyy"
 
 
-def test_align_history_date_columns_covers_existing_rows(monkeypatch):
-    captured = {}
-
-    class _Request:
-        def execute(self):
-            return {"sheets": [{"properties": {
-                "title": "Geschlossene Positionen", "sheetId": 91
-            }}]}
-
-    class _Sheets:
-        def get(self, **kwargs):
-            return _Request()
-
-    class _Service:
-        def spreadsheets(self):
-            return _Sheets()
-
-    def _capture(sheets, spreadsheet_id, body, *, context):
-        captured["body"] = body
-        captured["context"] = context
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", _capture)
-    checker._align_history_date_columns(_Service(), "spreadsheet-id")
-
-    requests = captured["body"]["requests"]
-    assert len(requests) == 2
-    for column, request in zip(("Einstiegsdatum", "Ausstiegsdatum"), requests):
-        repeat = request["repeatCell"]
-        assert repeat["range"]["sheetId"] == 91
-        assert repeat["range"]["startRowIndex"] == 2
-        assert "endRowIndex" not in repeat["range"]
-        assert repeat["range"]["startColumnIndex"] == checker.HISTORY_HEADERS.index(column)
-        assert repeat["cell"]["userEnteredFormat"]["horizontalAlignment"] == "LEFT"
-
-
-def test_history_date_alignment_failure_is_non_blocking(monkeypatch, capsys):
-    def fail_alignment(*args, **kwargs):
-        raise RuntimeError("simulierter Google-Sheets-Formatierungsfehler")
-
-    monkeypatch.setattr(checker, "_align_history_date_columns", fail_alignment)
-
-    result = checker._align_history_date_columns_best_effort(
-        object(), "spreadsheet-id"
-    )
-
-    assert result is False
-    output = capsys.readouterr().out
-    assert "WARNUNG: Linksbündige Datumsformatierung" in output
-    assert "Positions-/Historienaktualisierung wird fortgesetzt" in output
-    assert "simulierter Google-Sheets-Formatierungsfehler" in output
-
-
-def test_history_date_alignment_best_effort_returns_true_when_formatting_succeeds(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        checker, "_align_history_date_columns",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
-
-    result = checker._align_history_date_columns_best_effort(
-        "sheets-service", "spreadsheet-id"
-    )
-
-    assert result is True
-    assert len(calls) == 1
-    assert calls[0][0] == ("sheets-service", "spreadsheet-id")
-
-
 def test_make_row_uses_tracker_current_price_for_visible_price_and_performance_without_relaxing_quality_gate():
     tech = checker.TechnicalResult(
         close=None,
@@ -832,107 +764,6 @@ def test_closed_history_sorts_oldest_first_and_numbers_contiguously():
     ]
     assert [row[-1] for row in numbered] == [1, 2, 3, 4]
     assert checker.HISTORY_DISPLAY_HEADERS == checker.HISTORY_HEADERS + ["Nr."]
-
-
-def test_google_history_tab_uses_three_level_sort_and_numbers_after_sort(monkeypatch):
-    requests, updates, clears = [], [], []
-
-    class Request:
-        def __init__(self, result=None): self.result = result or {}
-        def execute(self): return self.result
-
-    class Values:
-        def get(self, **kwargs):
-            def history_row(ticker, exit_date, entry_date):
-                row = [""] * len(checker.HISTORY_HEADERS)
-                row[checker.HISTORY_HEADERS.index("Ticker")] = ticker
-                row[checker.HISTORY_HEADERS.index("Ausstiegsdatum")] = exit_date
-                row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = entry_date
-                return row
-            return Request({"values": [
-                ["Geschlossene Positionen | Stand"], checker.HISTORY_HEADERS,
-                history_row("ZETA", "16.11.2026", "01.01.2026"),
-                history_row("BETA", "01.02.2026", "01.01.2026"),
-                history_row("ALPHA", "01.02.2026", "01.01.2026"),
-                history_row("ALPHA", "01.02.2026", "02.01.2026"),
-            ]})
-        def update(self, **kwargs): updates.append(kwargs); return Request()
-        def clear(self, **kwargs): clears.append(kwargs); return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": 26},
-            }}]})
-        def values(self): return Values()
-    class Sheets:
-        def spreadsheets(self): return Spreadsheets()
-    def record_batch(_sheets, _spreadsheet_id, body, context=""):
-        requests.append((body, context)); return {"replies": []}
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", record_batch)
-
-    count = checker._sort_and_number_closed_history(Sheets(), "sheet-id")
-    assert count == 4
-    sort_requests = [item for body, _ in requests for item in body["requests"] if "sortRange" in item]
-    assert len(sort_requests) == 1
-    sort = sort_requests[0]["sortRange"]
-    assert sort["sortSpecs"] == [
-        {"dimensionIndex": len(checker.HISTORY_DISPLAY_HEADERS), "sortOrder": "ASCENDING"},
-        {"dimensionIndex": len(checker.HISTORY_DISPLAY_HEADERS) + 1, "sortOrder": "ASCENDING"},
-        {"dimensionIndex": len(checker.HISTORY_DISPLAY_HEADERS) + 2, "sortOrder": "ASCENDING"},
-        {"dimensionIndex": len(checker.HISTORY_DISPLAY_HEADERS) + 3, "sortOrder": "ASCENDING"},
-    ]
-    assert any(item.get("range") == "'Geschlossene Positionen'!AA2" for item in updates)
-    assert not any(item.get("range") == "'Geschlossene Positionen'!AB2:AD2" for item in updates)
-    sort_keys = next(item for item in updates if item.get("range") == "'Geschlossene Positionen'!AB3:AE6")
-    assert sort_keys["body"]["values"] == [
-        [checker._date_to_sheets_serial("16.11.2026", "Ausstiegsdatum", 3, strict=True), "zeta", checker._date_to_sheets_serial("01.01.2026", "Einstiegsdatum", 3, strict=True), 1],
-        [checker._date_to_sheets_serial("01.02.2026", "Ausstiegsdatum", 4, strict=True), "beta", checker._date_to_sheets_serial("01.01.2026", "Einstiegsdatum", 4, strict=True), 2],
-        [checker._date_to_sheets_serial("01.02.2026", "Ausstiegsdatum", 5, strict=True), "alpha", checker._date_to_sheets_serial("01.01.2026", "Einstiegsdatum", 5, strict=True), 3],
-        [checker._date_to_sheets_serial("01.02.2026", "Ausstiegsdatum", 6, strict=True), "alpha", checker._date_to_sheets_serial("02.01.2026", "Einstiegsdatum", 6, strict=True), 4],
-    ]
-    numbered = next(item for item in updates if item.get("range") == "'Geschlossene Positionen'!AA3:AA6")
-    assert numbered["body"]["values"] == [[1], [2], [3], [4]]
-    assert [item.get("range") for item in clears].count("'Geschlossene Positionen'!AB:AE") == 2
-
-
-def test_google_history_accepts_existing_27_column_header_and_repeat_runs(monkeypatch):
-    calls = {"runs": 0, "sorts": [], "numbers": []}
-    class Request:
-        def __init__(self, result=None): self.result = result or {}
-        def execute(self): return self.result
-    class Values:
-        def get(self, **kwargs):
-            calls["runs"] += 1
-            row = [""] * len(checker.HISTORY_HEADERS)
-            row[checker.HISTORY_HEADERS.index("Ticker")] = "AAA"
-            row[checker.HISTORY_HEADERS.index("Ausstiegsdatum")] = "01.02.2026"
-            row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = "01.01.2026"
-            return Request({"values": [["Titel"], checker.HISTORY_DISPLAY_HEADERS, row + [1]]})
-        def update(self, **kwargs):
-            if kwargs.get("range", "").endswith("AA3:AA3"):
-                calls["numbers"].append(kwargs["body"]["values"])
-            return Request()
-        def clear(self, **kwargs): return Request()
-    class Spreadsheets:
-        def get(self, **kwargs): return Request({"sheets": [{"properties": {
-            "sheetId": 7, "title": "Geschlossene Positionen",
-            "gridProperties": {"columnCount": 31},
-        }}]})
-        def values(self): return Values()
-    class Sheets:
-        def spreadsheets(self): return Spreadsheets()
-    def record_batch(_sheets, _id, body, context=""):
-        calls["sorts"].extend([r["sortRange"]["sortSpecs"] for r in body["requests"] if "sortRange" in r])
-        return {"replies": []}
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", record_batch)
-    assert checker._sort_and_number_closed_history(Sheets(), "id") == 1
-    assert checker._sort_and_number_closed_history(Sheets(), "id") == 1
-    assert calls["runs"] == 2
-    assert calls["numbers"] == [[[1]], [[1]]]
-    assert len(calls["sorts"]) == 2
-    assert calls["sorts"][0] == calls["sorts"][1]
 
 
 def test_local_closed_history_sort_uses_exit_ticker_entry_order():
@@ -1085,268 +916,6 @@ def test_27_column_header_is_normalized_by_initial_archive_recovery(tmp_path, mo
     assert "Nr." not in recovered.columns
 
 
-def test_google_sort_really_preserves_order_for_identical_three_keys_across_runs(monkeypatch):
-    # Simuliert die tatsächliche SortRange-Wirkung auf persistente Sheet-Zeilen,
-    # statt nur zwei identische API-Spezifikationen zu vergleichen.
-    class Request:
-        def __init__(self, result=None): self.result = result or {}
-        def execute(self): return self.result
-
-    rows = []
-    header = checker.HISTORY_DISPLAY_HEADERS[:]
-    for name in ("SECOND", "FIRST", "THIRD"):
-        row = [""] * len(checker.HISTORY_HEADERS)
-        row[checker.HISTORY_HEADERS.index("Ticker")] = "SAME"
-        row[checker.HISTORY_HEADERS.index("Name")] = name
-        row[checker.HISTORY_HEADERS.index("Ausstiegsdatum")] = "01.02.2026"
-        row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = "01.01.2026"
-        rows.append(row + [None])
-    state = {
-        "rows": rows, "headers": header, "sorts": 0, "clears": [],
-        "helper_header": ["old_exit", "old_ticker", "old_entry", "old_row"],
-    }
-
-    class Values:
-        def get(self, **kwargs):
-            return Request({"values": [
-                ["Geschlossene Positionen | Stand"], state["headers"], *[r[:27] for r in state["rows"]]
-            ]})
-        def update(self, **kwargs):
-            target = kwargs["range"].split("!")[-1]
-            vals = kwargs["body"]["values"]
-            if target == "AA2":
-                state["headers"] = checker.HISTORY_DISPLAY_HEADERS[:]
-            elif target.startswith("AB3:AE"):
-                for index, key_row in enumerate(vals):
-                    state["rows"][index][27:31] = key_row
-            elif target.startswith("AA3:AA"):
-                for index, value in enumerate(vals):
-                    state["rows"][index][26] = value[0]
-            return Request()
-        def clear(self, **kwargs):
-            target = kwargs["range"].split("!")[-1]
-            state["clears"].append(target)
-            if target == "AB:AE":
-                state["helper_header"] = [None, None, None, None]
-                for row in state["rows"]:
-                    row[27:31] = [None, None, None, None]
-            return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": 31},
-            }}]})
-        def values(self): return Values()
-    class Sheets:
-        def spreadsheets(self): return Spreadsheets()
-
-    def apply_google_sort(_sheets, _id, body, context=""):
-        for request in body["requests"]:
-            if "sortRange" not in request:
-                continue
-            specs = request["sortRange"]["sortSpecs"]
-            state["rows"].sort(key=lambda row: tuple(row[spec["dimensionIndex"]] for spec in specs))
-            state["sorts"] += 1
-        return {"replies": []}
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", apply_google_sort)
-    sheets = Sheets()
-    assert checker._sort_and_number_closed_history(sheets, "id") == 3
-    first_order = [row[checker.HISTORY_HEADERS.index("Name")] for row in state["rows"]]
-    assert first_order == ["SECOND", "FIRST", "THIRD"]
-    assert [row[26] for row in state["rows"]] == [1, 2, 3]
-    assert all(row[27:31] == [None, None, None, None] for row in state["rows"])
-    assert state["helper_header"] == [None, None, None, None]
-
-    assert checker._sort_and_number_closed_history(sheets, "id") == 3
-    second_order = [row[checker.HISTORY_HEADERS.index("Name")] for row in state["rows"]]
-    assert second_order == first_order
-    assert [row[26] for row in state["rows"]] == [1, 2, 3]
-    assert state["sorts"] == 2
-    assert state["clears"].count("AB:AE") == 4
-
-
-def test_google_history_helper_columns_are_cleared_and_hidden_when_sort_request_fails(monkeypatch):
-    state = {
-        "helper_values": None, "clear_ranges": [], "sort_attempts": 0,
-        "hide_requests": [],
-    }
-
-    class Request:
-        def __init__(self, result=None, error=None):
-            self.result, self.error = result or {}, error
-        def execute(self):
-            if self.error:
-                raise self.error
-            return self.result
-
-    class Values:
-        def get(self, **kwargs):
-            row = [""] * len(checker.HISTORY_HEADERS)
-            row[checker.HISTORY_HEADERS.index("Ticker")] = "AAA"
-            row[checker.HISTORY_HEADERS.index("Ausstiegsdatum")] = "02.02.2026"
-            row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = "01.01.2026"
-            return Request({"values": [["Titel"], checker.HISTORY_HEADERS, row]})
-        def update(self, **kwargs):
-            if kwargs.get("range", "").endswith("AB3:AE3"):
-                state["helper_values"] = kwargs["body"]["values"]
-            return Request()
-        def clear(self, **kwargs):
-            target = kwargs.get("range")
-            state["clear_ranges"].append(target)
-            if target == "'Geschlossene Positionen'!AB:AE":
-                state["helper_values"] = None
-            return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": 31},
-            }}]})
-        def values(self):
-            return Values()
-
-    class Sheets:
-        def spreadsheets(self):
-            return Spreadsheets()
-
-    def fail_sort(_sheets, _spreadsheet_id, body, context=""):
-        for request in body["requests"]:
-            if "sortRange" in request:
-                state["sort_attempts"] += 1
-                raise RuntimeError("simulierter Google-Sheets-Sortierfehler")
-            if "updateDimensionProperties" in request:
-                state["hide_requests"].append(request["updateDimensionProperties"])
-        return {"replies": []}
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", fail_sort)
-    with pytest.raises(RuntimeError, match="simulierter Google-Sheets-Sortierfehler"):
-        checker._sort_and_number_closed_history(Sheets(), "sheet-id")
-
-    assert state["sort_attempts"] == 1
-    assert state["helper_values"] is None
-    assert state["clear_ranges"].count("'Geschlossene Positionen'!AB:AE") == 2
-    assert len(state["hide_requests"]) == 1
-    hidden = state["hide_requests"][0]
-    assert hidden["range"]["startIndex"] == 27
-    assert hidden["range"]["endIndex"] == 31
-    assert hidden["properties"]["hiddenByUser"] is True
-
-
-def test_google_history_cleanup_failure_still_hides_helper_columns_and_preserves_primary_error(monkeypatch):
-    state = {"clear_calls": 0, "hide_requests": []}
-
-    class Request:
-        def __init__(self, result=None, error=None):
-            self.result, self.error = result or {}, error
-        def execute(self):
-            if self.error:
-                raise self.error
-            return self.result
-
-    class Values:
-        def get(self, **kwargs):
-            row = [""] * len(checker.HISTORY_HEADERS)
-            row[checker.HISTORY_HEADERS.index("Ticker")] = "AAA"
-            row[checker.HISTORY_HEADERS.index("Ausstiegsdatum")] = "02.02.2026"
-            row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = "01.01.2026"
-            return Request({"values": [["Titel"], checker.HISTORY_HEADERS, row]})
-        def update(self, **kwargs):
-            return Request()
-        def clear(self, **kwargs):
-            state["clear_calls"] += 1
-            if state["clear_calls"] == 2:
-                return Request(error=RuntimeError("simulierter Cleanup-Fehler"))
-            return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": 31},
-            }}]})
-        def values(self):
-            return Values()
-
-    class Sheets:
-        def spreadsheets(self):
-            return Spreadsheets()
-
-    def fail_sort_and_record_hide(_sheets, _spreadsheet_id, body, context=""):
-        for request in body["requests"]:
-            if "sortRange" in request:
-                raise RuntimeError("ursprünglicher Sortierfehler")
-            if "updateDimensionProperties" in request:
-                state["hide_requests"].append(request["updateDimensionProperties"])
-        return {"replies": []}
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", fail_sort_and_record_hide)
-    with pytest.raises(RuntimeError, match="ursprünglicher Sortierfehler") as caught:
-        checker._sort_and_number_closed_history(Sheets(), "sheet-id")
-
-    assert state["clear_calls"] == 2
-    assert len(state["hide_requests"]) == 1
-    assert state["hide_requests"][0]["properties"]["hiddenByUser"] is True
-    assert any("Cleanup-Fehler" in note for note in getattr(caught.value, "__notes__", []))
-
-
-def test_google_history_cleanup_failure_without_primary_error_is_raised_after_hide_attempt(monkeypatch):
-    state = {"clear_calls": 0, "hide_requests": []}
-
-    class Request:
-        def __init__(self, result=None, error=None):
-            self.result, self.error = result or {}, error
-        def execute(self):
-            if self.error:
-                raise self.error
-            return self.result
-
-    class Values:
-        def get(self, **kwargs):
-            row = [""] * len(checker.HISTORY_HEADERS)
-            row[checker.HISTORY_HEADERS.index("Ticker")] = "AAA"
-            row[checker.HISTORY_HEADERS.index("Ausstiegsdatum")] = "02.02.2026"
-            row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = "01.01.2026"
-            return Request({"values": [["Titel"], checker.HISTORY_HEADERS, row]})
-        def update(self, **kwargs):
-            return Request()
-        def clear(self, **kwargs):
-            state["clear_calls"] += 1
-            if state["clear_calls"] == 2:
-                return Request(error=RuntimeError("simulierter Cleanup-Fehler"))
-            return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": 31},
-            }}]})
-        def values(self):
-            return Values()
-
-    class Sheets:
-        def spreadsheets(self):
-            return Spreadsheets()
-
-    def record_hide(_sheets, _spreadsheet_id, body, context=""):
-        for request in body["requests"]:
-            if "updateDimensionProperties" in request:
-                state["hide_requests"].append(request["updateDimensionProperties"])
-        return {"replies": []}
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", record_hide)
-    with pytest.raises(RuntimeError, match="simulierter Cleanup-Fehler"):
-        checker._sort_and_number_closed_history(Sheets(), "sheet-id")
-
-    assert state["clear_calls"] == 2
-    assert len(state["hide_requests"]) == 1
-    assert state["hide_requests"][0]["properties"]["hiddenByUser"] is True
-
-
 def test_upsert_preflight_accepts_existing_27_column_history_header(monkeypatch):
     class StopAfterPreflight(RuntimeError):
         pass
@@ -1394,270 +963,6 @@ def test_upsert_preflight_accepts_existing_27_column_history_header(monkeypatch)
             pd.DataFrame(columns=checker.HISTORY_HEADERS),
             creds=object(),
         )
-
-
-def test_google_history_initial_helper_clear_failure_still_retries_cleanup_and_hides(monkeypatch):
-    state = {"clear_calls": 0, "hide_requests": []}
-
-    class Request:
-        def __init__(self, result=None, error=None):
-            self.result, self.error = result or {}, error
-        def execute(self):
-            if self.error:
-                raise self.error
-            return self.result
-
-    class Values:
-        def get(self, **kwargs):
-            row = [""] * len(checker.HISTORY_HEADERS)
-            row[checker.HISTORY_HEADERS.index("Ticker")] = "AAA"
-            row[checker.HISTORY_HEADERS.index("Ausstiegsdatum")] = "02.02.2026"
-            row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = "01.01.2026"
-            return Request({"values": [["Titel"], checker.HISTORY_HEADERS, row]})
-        def update(self, **kwargs):
-            return Request()
-        def clear(self, **kwargs):
-            state["clear_calls"] += 1
-            if state["clear_calls"] == 1:
-                return Request(error=RuntimeError("initialer Clear fehlgeschlagen"))
-            return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": 31},
-            }}]})
-        def values(self):
-            return Values()
-
-    class Sheets:
-        def spreadsheets(self):
-            return Spreadsheets()
-
-    def record_hide(_sheets, _spreadsheet_id, body, context=""):
-        for request in body["requests"]:
-            if "updateDimensionProperties" in request:
-                state["hide_requests"].append(request["updateDimensionProperties"])
-        return {"replies": []}
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", record_hide)
-    with pytest.raises(RuntimeError, match="initialer Clear fehlgeschlagen"):
-        checker._sort_and_number_closed_history(Sheets(), "sheet-id")
-
-    assert state["clear_calls"] == 2
-    assert len(state["hide_requests"]) == 1
-    assert state["hide_requests"][0]["properties"]["hiddenByUser"] is True
-
-
-def test_google_history_empty_intermediate_row_still_cleans_and_hides(monkeypatch):
-    state = {"clear_calls": 0, "hide_requests": []}
-
-    class Request:
-        def __init__(self, result=None):
-            self.result = result or {}
-        def execute(self):
-            return self.result
-
-    class Values:
-        def get(self, **kwargs):
-            row = [""] * len(checker.HISTORY_HEADERS)
-            row[checker.HISTORY_HEADERS.index("Ticker")] = "AAA"
-            return Request({"values": [
-                ["Titel"], checker.HISTORY_HEADERS, row, [], row
-            ]})
-        def update(self, **kwargs):
-            return Request()
-        def clear(self, **kwargs):
-            state["clear_calls"] += 1
-            return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": 31},
-            }}]})
-        def values(self):
-            return Values()
-
-    class Sheets:
-        def spreadsheets(self):
-            return Spreadsheets()
-
-    def record_hide(_sheets, _spreadsheet_id, body, context=""):
-        for request in body["requests"]:
-            if "updateDimensionProperties" in request:
-                state["hide_requests"].append(request["updateDimensionProperties"])
-        return {"replies": []}
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", record_hide)
-    with pytest.raises(RuntimeError, match="leere Zwischenzeile"):
-        checker._sort_and_number_closed_history(Sheets(), "sheet-id")
-
-    assert state["clear_calls"] == 2
-    assert len(state["hide_requests"]) == 1
-    assert state["hide_requests"][0]["range"]["startIndex"] == 27
-    assert state["hide_requests"][0]["range"]["endIndex"] == 31
-
-
-@pytest.mark.parametrize(
-    "existing_column_count,expected_hide_end",
-    [(26, None), (27, None), (28, 28), (29, 29), (30, 30)],
-)
-def test_google_history_column_expansion_failure_only_hides_existing_helper_columns(
-    monkeypatch, existing_column_count, expected_hide_end
-):
-    state = {"clear_calls": 0, "hide_requests": []}
-
-    class Request:
-        def __init__(self, result=None):
-            self.result = result or {}
-        def execute(self):
-            return self.result
-
-    class Values:
-        def clear(self, **kwargs):
-            state["clear_calls"] += 1
-            return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": existing_column_count},
-            }}]})
-        def values(self):
-            return Values()
-
-    class Sheets:
-        def spreadsheets(self):
-            return Spreadsheets()
-
-    def fail_expand_record_hide(_sheets, _spreadsheet_id, body, context=""):
-        for request in body["requests"]:
-            if "updateSheetProperties" in request:
-                raise RuntimeError("Spalten-Erweiterung fehlgeschlagen")
-            if "updateDimensionProperties" in request:
-                state["hide_requests"].append(request["updateDimensionProperties"])
-        return {"replies": []}
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", fail_expand_record_hide)
-    with pytest.raises(RuntimeError, match="Spalten-Erweiterung fehlgeschlagen"):
-        checker._sort_and_number_closed_history(Sheets(), "sheet-id")
-
-    assert state["clear_calls"] == 1
-    if expected_hide_end is None:
-        assert state["hide_requests"] == []
-    else:
-        assert len(state["hide_requests"]) == 1
-        hide_range = state["hide_requests"][0]["range"]
-        assert hide_range["startIndex"] == 27
-        assert hide_range["endIndex"] == expected_hide_end
-        assert state["hide_requests"][0]["properties"]["hiddenByUser"] is True
-
-
-def test_google_history_hide_failure_does_not_replace_primary_sort_error(monkeypatch):
-    state = {"clear_calls": 0, "hide_attempts": 0}
-
-    class Request:
-        def __init__(self, result=None):
-            self.result = result or {}
-        def execute(self):
-            return self.result
-
-    class Values:
-        def get(self, **kwargs):
-            row = [""] * len(checker.HISTORY_HEADERS)
-            row[checker.HISTORY_HEADERS.index("Ticker")] = "AAA"
-            row[checker.HISTORY_HEADERS.index("Ausstiegsdatum")] = "02.02.2026"
-            row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = "01.01.2026"
-            return Request({"values": [["Titel"], checker.HISTORY_HEADERS, row]})
-        def update(self, **kwargs):
-            return Request()
-        def clear(self, **kwargs):
-            state["clear_calls"] += 1
-            return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": 31},
-            }}]})
-        def values(self):
-            return Values()
-
-    class Sheets:
-        def spreadsheets(self):
-            return Spreadsheets()
-
-    def fail_sort_and_hide(_sheets, _spreadsheet_id, body, context=""):
-        for request in body["requests"]:
-            if "sortRange" in request:
-                raise RuntimeError("primärer Sortierfehler")
-            if "updateDimensionProperties" in request:
-                state["hide_attempts"] += 1
-                raise RuntimeError("Hide fehlgeschlagen")
-        return {"replies": []}
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", fail_sort_and_hide)
-    with pytest.raises(RuntimeError, match="primärer Sortierfehler") as caught:
-        checker._sort_and_number_closed_history(Sheets(), "sheet-id")
-
-    assert state["clear_calls"] == 2
-    assert state["hide_attempts"] == 1
-    assert any("AB:AE ausblenden" in note for note in getattr(caught.value, "__notes__", []))
-
-
-def test_google_history_hide_failure_without_primary_error_is_raised(monkeypatch):
-    state = {"clear_calls": 0, "hide_attempts": 0}
-
-    class Request:
-        def __init__(self, result=None):
-            self.result = result or {}
-        def execute(self):
-            return self.result
-
-    class Values:
-        def get(self, **kwargs):
-            row = [""] * len(checker.HISTORY_HEADERS)
-            row[checker.HISTORY_HEADERS.index("Ticker")] = "AAA"
-            row[checker.HISTORY_HEADERS.index("Ausstiegsdatum")] = "02.02.2026"
-            row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = "01.01.2026"
-            return Request({"values": [["Titel"], checker.HISTORY_HEADERS, row]})
-        def update(self, **kwargs):
-            return Request()
-        def clear(self, **kwargs):
-            state["clear_calls"] += 1
-            return Request()
-
-    class Spreadsheets:
-        def get(self, **kwargs):
-            return Request({"sheets": [{"properties": {
-                "sheetId": 77, "title": "Geschlossene Positionen",
-                "gridProperties": {"columnCount": 31},
-            }}]})
-        def values(self):
-            return Values()
-
-    class Sheets:
-        def spreadsheets(self):
-            return Spreadsheets()
-
-    def fail_hide(_sheets, _spreadsheet_id, body, context=""):
-        for request in body["requests"]:
-            if "updateDimensionProperties" in request:
-                state["hide_attempts"] += 1
-                raise RuntimeError("Hide ohne Primärfehler fehlgeschlagen")
-        return {"replies": []}
-
-    monkeypatch.setattr(checker, "_google_batch_update_with_retry", fail_hide)
-    with pytest.raises(RuntimeError, match="Hide ohne Primärfehler fehlgeschlagen"):
-        checker._sort_and_number_closed_history(Sheets(), "sheet-id")
-
-    assert state["clear_calls"] == 2
-    assert state["hide_attempts"] == 1
 
 
 def test_twelvedata_ppfd_accepts_only_verified_xstu_eur_metadata(monkeypatch):
@@ -2025,7 +1330,6 @@ def test_upsert_stages_drive_readback_until_all_google_checks_pass(
     monkeypatch.setattr(checker, "_verify_history_full_content", lambda *args, **kwargs: [])
     monkeypatch.setattr(checker, "_append_missing_history_rows", lambda *args, **kwargs: 0)
     monkeypatch.setattr(checker, "_sort_and_number_closed_history", lambda *args, **kwargs: len(archive_rows))
-    monkeypatch.setattr(checker, "_align_history_date_columns", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulierter Formatierungsfehler")))
     def swap(*args, **kwargs):
         state["swap_calls"] += 1
         return {"Offene Positionen+Check": "__BACKUP_OFFEN__"}
@@ -2394,3 +1698,434 @@ def test_quarantine_finalized_new_master_reports_when_rename_failed_and_master_r
         checker._quarantine_finalized_new_master(
             Drive(), "new-master-id", "INIT-original"
         )
+
+
+def test_read_existing_history_uses_raw_values_and_preserves_sub_cent_precision():
+    class Request:
+        def __init__(self, result):
+            self.result = result
+        def execute(self):
+            return self.result
+
+    raw_row = [""] * (len(checker.HISTORY_HEADERS) + 1)
+    raw_row[checker.HISTORY_HEADERS.index("Ticker")] = "XAU/USD"
+    raw_row[checker.HISTORY_HEADERS.index("Name")] = "Gold Spot"
+    raw_row[checker.HISTORY_HEADERS.index("Einstieg")] = 4037.0
+    raw_row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = 45965.0
+    raw_row[checker.HISTORY_HEADERS.index("OS_Aktueller_Kurs")] = 0.001
+    raw_row[-1] = 52
+
+    calls = {}
+    class Values:
+        def get(self, **kwargs):
+            calls.update(kwargs)
+            return Request({"values": [
+                ["Geschlossene Positionen | historische Faktenbasis"],
+                checker.HISTORY_DISPLAY_HEADERS,
+                raw_row,
+            ]})
+    class Spreadsheets:
+        def get(self, **kwargs):
+            return Request({"sheets": [{"properties": {"title": "Geschlossene Positionen"}}]})
+        def values(self):
+            return Values()
+    class Sheets:
+        def spreadsheets(self):
+            return Spreadsheets()
+
+    rows = checker.read_existing_history(Sheets(), "sheet-id")
+    assert calls["valueRenderOption"] == "UNFORMATTED_VALUE"
+    assert calls["dateTimeRenderOption"] == "SERIAL_NUMBER"
+    assert rows[2][checker.HISTORY_HEADERS.index("OS_Aktueller_Kurs")] == 0.001
+    assert rows[2][checker.HISTORY_HEADERS.index("Einstiegsdatum")] == 45965.0
+
+    expected = checker._expected_history_records(
+        rows, pd.DataFrame(columns=checker.HISTORY_HEADERS)
+    )
+    assert len(expected) == 1
+    archived = next(iter(expected.values()))
+    assert archived[checker.HISTORY_HEADERS.index("OS_Aktueller_Kurs")] == 0.001
+
+
+def test_google_history_numbering_changes_only_aa_and_preserves_existing_row_order(monkeypatch):
+    updates = []
+    batch_requests = []
+    original_rows = []
+
+    def make_row(ticker, number):
+        row = [""] * (len(checker.HISTORY_HEADERS) + 1)
+        row[checker.HISTORY_HEADERS.index("Ticker")] = ticker
+        row[len(checker.HISTORY_HEADERS)] = number
+        return row
+
+    first = make_row("ZETA", 8)
+    second = make_row("ALPHA", 9)
+    original_rows.extend([first.copy(), second.copy()])
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self):
+            return self.result
+    class Values:
+        def get(self, **kwargs):
+            assert kwargs["range"] == "'Geschlossene Positionen'!A1:AA"
+            assert kwargs["valueRenderOption"] == "UNFORMATTED_VALUE"
+            return Request({"values": [
+                ["Geschlossene Positionen | Stand"],
+                checker.HISTORY_DISPLAY_HEADERS,
+                first.copy(),
+                second.copy(),
+            ]})
+        def update(self, **kwargs):
+            updates.append(kwargs)
+            return Request()
+        def clear(self, **kwargs):
+            raise AssertionError("Ein Archiv-Clear ist verboten.")
+    class Spreadsheets:
+        def get(self, **kwargs):
+            return Request({"sheets": [{"properties": {
+                "sheetId": 77,
+                "title": "Geschlossene Positionen",
+                "gridProperties": {"columnCount": 31},
+            }}]})
+        def values(self):
+            return Values()
+    class Sheets:
+        def spreadsheets(self):
+            return Spreadsheets()
+    def record_batch(_sheets, _spreadsheet_id, body, context=""):
+        batch_requests.extend(body["requests"])
+        return {"replies": []}
+
+    monkeypatch.setattr(checker, "_google_batch_update_with_retry", record_batch)
+    assert checker._sort_and_number_closed_history(Sheets(), "sheet-id") == 2
+
+    assert [first[checker.HISTORY_HEADERS.index("Ticker")],
+            second[checker.HISTORY_HEADERS.index("Ticker")]] == ["ZETA", "ALPHA"]
+    assert [row[-1] for row in original_rows] == [8, 9]
+    assert len(updates) == 1
+    assert updates[0]["range"] == "'Geschlossene Positionen'!AA3:AA4"
+    assert updates[0]["body"]["values"] == [[1], [2]]
+    assert all("sortRange" not in request for request in batch_requests)
+    assert all(
+        request.get("repeatCell", {}).get("range", {}).get("startColumnIndex") == len(checker.HISTORY_HEADERS)
+        for request in batch_requests
+    )
+    assert all("AB" not in str(item) and "AE" not in str(item) for item in updates + batch_requests)
+
+
+def test_existing_history_upload_path_has_no_existing_row_format_mutator():
+    import inspect
+    source = inspect.getsource(checker.upsert_google_sheet)
+    assert "_align_history_date_columns_best_effort(" not in source
+    assert not hasattr(checker, "_align_history_date_columns")
+    assert not hasattr(checker, "_align_history_date_columns_best_effort")
+    assert "_sort_and_number_closed_history(" in source
+
+
+def test_history_verification_accepts_exact_historical_os_price_without_current_price_revaluation():
+    raw_row = [""] * (len(checker.HISTORY_HEADERS) + 1)
+    raw_row[checker.HISTORY_HEADERS.index("Ticker")] = "XAU/USD"
+    raw_row[checker.HISTORY_HEADERS.index("Name")] = "Gold Spot"
+    raw_row[checker.HISTORY_HEADERS.index("Einstieg")] = 4037.0
+    raw_row[checker.HISTORY_HEADERS.index("Einstiegsdatum")] = 45965.0
+    raw_row[checker.HISTORY_HEADERS.index("OS_Aktueller_Kurs")] = 0.001
+    raw_row[len(checker.HISTORY_HEADERS)] = 1
+    actual = [
+        ["Geschlossene Positionen | historische Faktenbasis"],
+        checker.HISTORY_DISPLAY_HEADERS,
+        raw_row,
+    ]
+    item = {
+        column: (raw_row[index] if index < len(raw_row) else "")
+        for index, column in enumerate(checker.HISTORY_HEADERS)
+    }
+    expected = {checker._history_key(item): [item[column] for column in checker.HISTORY_HEADERS]}
+
+    class Request:
+        def execute(self):
+            return {"values": actual}
+    class Values:
+        def get(self, **kwargs):
+            assert kwargs["valueRenderOption"] == "UNFORMATTED_VALUE"
+            assert kwargs["dateTimeRenderOption"] == "SERIAL_NUMBER"
+            return Request()
+    class Spreadsheets:
+        def values(self):
+            return Values()
+    class Sheets:
+        def spreadsheets(self):
+            return Spreadsheets()
+
+    result = checker._verify_history_full_content(Sheets(), "sheet-id", expected)
+    assert result[2][checker.HISTORY_HEADERS.index("OS_Aktueller_Kurs")] == 0.001
+
+
+def test_history_numbering_expands_only_to_aa_when_legacy_header_has_26_columns(monkeypatch):
+    batch = []
+    updates = []
+    row = [""] * len(checker.HISTORY_HEADERS)
+    row[checker.HISTORY_HEADERS.index("Ticker")] = "XAU/USD"
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self):
+            return self.result
+    class Values:
+        def get(self, **kwargs):
+            return Request({"values": [
+                ["Historie"],
+                checker.HISTORY_HEADERS,
+                row,
+            ]})
+        def update(self, **kwargs):
+            updates.append(kwargs)
+            return Request()
+    class Spreadsheets:
+        def get(self, **kwargs):
+            return Request({"sheets": [{"properties": {
+                "sheetId": 77,
+                "title": "Geschlossene Positionen",
+                "gridProperties": {"columnCount": 26},
+            }}]})
+        def values(self):
+            return Values()
+    class Sheets:
+        def spreadsheets(self):
+            return Spreadsheets()
+    def record_batch(_sheets, _id, body, context=""):
+        batch.extend(body["requests"])
+        return {"replies": []}
+
+    monkeypatch.setattr(checker, "_google_batch_update_with_retry", record_batch)
+    assert checker._sort_and_number_closed_history(Sheets(), "sheet-id") == 1
+
+    assert [item["range"] for item in updates] == [
+        "'Geschlossene Positionen'!AA2",
+        "'Geschlossene Positionen'!AA3:AA3",
+    ]
+    assert updates[0]["body"]["values"] == [["Nr."]]
+    assert updates[1]["body"]["values"] == [[1]]
+    expansion = [item for item in batch if "updateSheetProperties" in item]
+    assert len(expansion) == 1
+    assert expansion[0]["updateSheetProperties"]["properties"]["gridProperties"]["columnCount"] == 27
+    assert all("sortRange" not in item for item in batch)
+
+
+def test_history_numbering_fails_closed_on_blank_intermediate_row_without_archive_writes(monkeypatch):
+    updates = []
+    batch_updates = []
+    first = [""] * (len(checker.HISTORY_HEADERS) + 1)
+    first[checker.HISTORY_HEADERS.index("Ticker")] = "FIRST"
+    second = [""] * (len(checker.HISTORY_HEADERS) + 1)
+    second[checker.HISTORY_HEADERS.index("Ticker")] = "SECOND"
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self):
+            return self.result
+    class Values:
+        def get(self, **kwargs):
+            return Request({"values": [
+                ["Historie"],
+                checker.HISTORY_DISPLAY_HEADERS,
+                first,
+                [],
+                second,
+            ]})
+        def update(self, **kwargs):
+            updates.append(kwargs)
+            return Request()
+    class Spreadsheets:
+        def get(self, **kwargs):
+            return Request({"sheets": [{"properties": {
+                "sheetId": 77,
+                "title": "Geschlossene Positionen",
+                "gridProperties": {"columnCount": 26},
+            }}]})
+        def values(self):
+            return Values()
+    class Sheets:
+        def spreadsheets(self):
+            return Spreadsheets()
+
+    monkeypatch.setattr(
+        checker, "_google_batch_update_with_retry",
+        lambda *args, **kwargs: batch_updates.append((args, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match="leere Zwischenzeile"):
+        checker._sort_and_number_closed_history(Sheets(), "sheet-id")
+    assert updates == []
+    assert batch_updates == []
+
+
+def _valid_history_test_row(ticker, number=1):
+    row = {column: "" for column in checker.HISTORY_HEADERS}
+    row.update({
+        "Name": f"Unternehmen {ticker}",
+        "Ticker": ticker,
+        "Einstieg": 100 + number,
+        "Einstiegsdatum": f"{((number - 1) % 28) + 1:02d}.01.2025",
+        "Ausstiegsdatum": f"{((number - 1) % 28) + 1:02d}.01.2025",
+        "Status": "Verkauft",
+        "Richtung": "Long",
+        "Ausstiegskurs": 110 + number,
+    })
+    return row
+
+
+def test_append_aborts_on_blank_intermediate_history_row_before_append(monkeypatch):
+    rows = [["Titel"], checker.HISTORY_DISPLAY_HEADERS]
+    for number in range(checker.MINIMUM_PROTECTED_HISTORY_ROWS):
+        row = _valid_history_test_row(f"OLD{number:02d}", number + 1)
+        rows.append([row[column] for column in checker.HISTORY_HEADERS] + [number + 1])
+        if number == 24:
+            rows.append([])
+
+    incoming = _valid_history_test_row("NEW", 60)
+    calls = {"append": []}
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self):
+            return self.result
+
+    class Values:
+        def append(self, **kwargs):
+            calls["append"].append(kwargs)
+            return Request({"updates": {"updatedRows": 1}})
+
+    class SpreadsheetResource:
+        def get(self, **kwargs):
+            return Request({"sheets": [{"properties": {
+                "sheetId": 77,
+                "title": "Geschlossene Positionen",
+                "gridProperties": {"columnCount": 27},
+            }}]})
+        def values(self):
+            return Values()
+
+    class Sheets:
+        def spreadsheets(self):
+            return SpreadsheetResource()
+
+    monkeypatch.setattr(
+        checker, "read_existing_history", lambda *args, **kwargs: rows
+    )
+    with pytest.raises(RuntimeError, match="leere Zwischenzeile"):
+        checker._append_missing_history_rows(
+            Sheets(), "sheet-id",
+            pd.DataFrame([incoming], columns=checker.HISTORY_HEADERS),
+            allow_initialize=False,
+        )
+    assert calls["append"] == []
+
+
+def test_full_history_verification_rejects_changed_physical_order():
+    first = _valid_history_test_row("FIRST", 1)
+    second = _valid_history_test_row("SECOND", 2)
+    first_key = checker._history_key(first)
+    second_key = checker._history_key(second)
+
+    def raw_row(item, number):
+        raw = [item[column] for column in checker.HISTORY_HEADERS]
+        for index, column in enumerate(checker.HISTORY_HEADERS):
+            if column in {"Einstiegsdatum", "Ausstiegsdatum"}:
+                raw[index] = checker._date_to_sheets_serial(
+                    raw[index], column, number + 2, strict=True
+                )
+        return raw + [number]
+
+    expected = {
+        first_key: [first[column] for column in checker.HISTORY_HEADERS],
+        second_key: [second[column] for column in checker.HISTORY_HEADERS],
+    }
+    actual = [
+        ["Historie"],
+        checker.HISTORY_DISPLAY_HEADERS,
+        raw_row(second, 1),
+        raw_row(first, 2),
+    ]
+
+    class Request:
+        def execute(self):
+            return {"values": actual}
+
+    class Values:
+        def get(self, **kwargs):
+            return Request()
+
+    class SpreadsheetResource:
+        def values(self):
+            return Values()
+
+    class Sheets:
+        def spreadsheets(self):
+            return SpreadsheetResource()
+
+    with pytest.raises(RuntimeError, match="physische Reihenfolge"):
+        checker._verify_history_full_content(
+            Sheets(), "sheet-id", expected,
+            expected_order=[first_key, second_key],
+        )
+
+
+def test_upsert_preflight_rejects_blank_history_gap_before_any_sheet_write(monkeypatch):
+    rows = [["Titel"], checker.HISTORY_DISPLAY_HEADERS]
+    for number in range(checker.MINIMUM_PROTECTED_HISTORY_ROWS):
+        row = _valid_history_test_row(f"OLD{number:02d}", number + 1)
+        rows.append([row[column] for column in checker.HISTORY_HEADERS] + [number + 1])
+        if number == 24:
+            rows.append([])
+
+    calls = {"batch_update": 0, "snapshot": 0}
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self):
+            return self.result
+
+    class SpreadsheetResource:
+        def get(self, **kwargs):
+            return Request({"sheets": [{"properties": {
+                "sheetId": 77, "title": "Geschlossene Positionen",
+            }}]})
+        def batchUpdate(self, **kwargs):
+            calls["batch_update"] += 1
+            return Request()
+
+    class Sheets:
+        def spreadsheets(self):
+            return SpreadsheetResource()
+
+    sheets = Sheets()
+    monkeypatch.setattr(checker, "_validate_output_before_upload", lambda *args: None)
+    monkeypatch.setattr(
+        checker, "build", lambda service, version, credentials: sheets, raising=False
+    )
+    monkeypatch.setattr(
+        checker, "_find_or_initialize_master",
+        lambda drive, closed_df: ("spreadsheet-id", False, None),
+    )
+    monkeypatch.setattr(
+        checker, "read_existing_history", lambda *args, **kwargs: rows
+    )
+    monkeypatch.setattr(
+        checker, "_snapshot_google_sheet",
+        lambda *args, **kwargs: calls.__setitem__("snapshot", calls["snapshot"] + 1),
+    )
+
+    with pytest.raises(RuntimeError, match="leere Zwischenzeile"):
+        checker.upsert_google_sheet(
+            pd.DataFrame(columns=checker.HEADERS),
+            pd.DataFrame(columns=checker.HISTORY_HEADERS),
+            creds=object(),
+        )
+
+    assert calls == {"batch_update": 0, "snapshot": 0}

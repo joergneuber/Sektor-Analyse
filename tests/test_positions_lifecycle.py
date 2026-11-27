@@ -1006,10 +1006,12 @@ def test_post_cleanup_verification_detects_any_history_cell_change():
     class Request:
         def __init__(self, values): self.values = values
         def execute(self): return {"values": self.values}
+    read_options = []
     class Values:
         def get(self, **kwargs):
             if "Offene Positionen+Check" in kwargs["range"]:
                 return Request(expected_open)
+            read_options.append(kwargs)
             return Request(actual_history)
     class Sheets:
         def spreadsheets(self):
@@ -1022,6 +1024,8 @@ def test_post_cleanup_verification_detects_any_history_cell_change():
     mod._verify_open_tab_full_content = lambda *args, **kwargs: expected_open
     try:
         mod._verify_tabs_after_cleanup(Sheets(), "sheet-id", expected_open, expected_history)
+        assert read_options[-1]["valueRenderOption"] == "UNFORMATTED_VALUE"
+        assert read_options[-1]["dateTimeRenderOption"] == "SERIAL_NUMBER"
         actual_history[2][0] = "CHANGED"
         with pytest.raises(RuntimeError, match="Tab-2-Nachprüfung"):
             mod._verify_tabs_after_cleanup(Sheets(), "sheet-id", expected_open, expected_history)

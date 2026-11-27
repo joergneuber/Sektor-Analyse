@@ -262,7 +262,6 @@ def _install_upsert_readback_harness(monkeypatch, tmp_path, *, fail_after_stage=
     monkeypatch.setattr(checker, "_write_sheet", _write_expected_open_payload)
     monkeypatch.setattr(checker, "_append_missing_history_rows", lambda *args, **kwargs: 0)
     monkeypatch.setattr(checker, "_sort_and_number_closed_history", lambda *args: 0)
-    monkeypatch.setattr(checker, "_align_history_date_columns_best_effort", lambda *args: True)
     monkeypatch.setattr(
         checker, "_swap_temp_tabs",
         lambda *args, **kwargs: {"Offene Positionen+Check": "backup-open-tab"},
