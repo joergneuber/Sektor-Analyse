@@ -691,14 +691,43 @@ jobs:
           # Nach allen Scannern kann Offene_Positionen.csv neue offene Ticker
           # enthalten. Vor der finalen Gesamtaktualisierung zuerst das aktuelle
           # Positionsuniversum registrieren und dessen Historien gezielt laden.
-          python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv
+          session_refresh_output="$(python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv --refresh-current-session-gaps 2>&1)"
           position_sync_rc=$?
+          printf '%s\n' "$session_refresh_output"
           python historical_ohlcv.py update --strict
           update_rc=$?
           python historical_ohlcv.py coverage --summary
           coverage_rc=$?
-          python historical_ohlcv.py verify-open-positions --positions-file Offene_Positionen.csv
-          positions_rc=$?
+          positions_rc=1
+          # Yahoo kann die Tageskerze unmittelbar nach dem Boersenschluss
+          # zeitversetzt bereitstellen. Nur fehlende aktuelle Sessions offener
+          # Positionen werden begrenzt erneut angefragt; das Quality-Gate bleibt
+          # unveraendert fail-closed und ein ungelieferter Kurs bleibt NICHT_FINAL.
+          for attempt in 1 2 3; do
+            python historical_ohlcv.py verify-open-positions --positions-file Offene_Positionen.csv
+            positions_rc=$?
+            if [ "$positions_rc" -eq 0 ]; then
+              break
+            fi
+            # Keine Warte-/Netzwerk-Retries fuer strukturelle Quality-Fehler
+            # oder unbekannte Kalender ohne nachgewiesene Session-Luecke.
+            # Fehlende Historie loest dagegen den gezielten Bootstrap-Retry aus.
+            if ! printf '%s\n' "$session_refresh_output" | grep -Eq 'HIST-OHLCV-SESSION-REFRESH: requested=[0-9]+ stale=[1-9][0-9]*'; then
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "OHLCV_OPEN_POSITION_REFRESH_RETRY=${attempt}/3 | erneute gezielte Aktualisierung in 45 Sekunden"
+              sleep 45
+              session_refresh_output="$(python historical_ohlcv.py sync-open-positions --positions-file Offene_Positionen.csv --refresh-current-session-gaps 2>&1)"
+              retry_sync_rc=$?
+              printf '%s\n' "$session_refresh_output"
+              # Der letzte gezielte Sync-Versuch ist maßgeblich. Ein transienter
+              # Fehler des ersten Versuchs gilt als behoben, wenn ein späterer
+              # Retry erfolgreich ist; die anschließende Positionsprüfung bleibt
+              # das unabhängige fachliche Gate.
+              position_sync_rc=$retry_sync_rc
+            fi
+          done
           set -e
           if [ -s historical_ohlcv.sqlite ] && [ -s historical_ohlcv_universe.json ]; then
             if [ "$position_sync_rc" -eq 0 ] && [ "$update_rc" -eq 0 ] && [ "$coverage_rc" -eq 0 ] && [ "$positions_rc" -eq 0 ]; then
