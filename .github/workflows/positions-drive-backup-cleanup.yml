@@ -1,0 +1,39 @@
+name: Positions Drive Backup Cleanup
+
+on:
+  schedule:
+    # Daily UTC; expired backups are removed at the first successful run after day 14.
+    - cron: '47 23 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offene-positionen-drive-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  cleanup-expired-drive-backups:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v5
+
+      - name: Python einrichten
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Read-only-Abhängigkeiten für Drive-Metadaten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-auth google-api-python-client
+
+      - name: Abgelaufene Positionsmaster-Backups bereinigen
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: python scripts/cleanup_positions_drive_backups.py
