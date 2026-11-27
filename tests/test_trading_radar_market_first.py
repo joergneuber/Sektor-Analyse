@@ -2529,3 +2529,56 @@ def test_fomc_calendar_does_not_masquerade_as_a_live_rate_or_futures_consensus_s
     assert "Konsens: NICHT VERFÜGBAR (keine separat live verifizierte Futures-Quelle)" in normalized
     assert "Unverifizierter Vorwert: 3.75%-4.00% (EFFR 3.88%)" in normalized
     assert "Unverifizierte Markterwartung: Hold 66%, Hike 34% (Impliziert aus Futures ZQ)" in normalized
+
+
+def test_live_market_snapshot_uses_common_vix_dxy_close_after_nyse_early_close():
+    """Black Friday's XNYS early close must not make the 17:00 ET DXY bar complete."""
+    import pandas as pd
+    from trading_radar_market_first import append_live_market_snapshot
+
+    symbols = [
+        "^GSPC", "^IXIC", "^RUT", "^VIX", "DX-Y.NYB", "DX=F", "^TNX", "TLT",
+        "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY",
+        "SPY", "VGK", "EEM", "EWJ", "GLD", "SLV", "USO", "UUP", "BTC-USD",
+    ]
+    index = pd.bdate_range(end="2026-11-27", periods=100, freq="B", tz="UTC")
+    columns = pd.MultiIndex.from_product([symbols, ["Close"]])
+    values = {
+        (symbol, "Close"): [100.0 + i * 0.1 for i in range(len(index))]
+        for symbol in symbols
+    }
+    values[("^VIX", "Close")] = [18.0 + i * 0.1 for i in range(len(index))]
+    values[("DX-Y.NYB", "Close")] = [100.0 + i * 0.1 for i in range(len(index))]
+    data = pd.DataFrame(values, index=index, columns=columns)
+    report = (
+        "1. Trading-Radar\nMarktregime: konstruktiv.\n"
+        "Indizes/Marktbreite: Marktbreite 8/11.\n"
+        "Zinsen/Renditen: US 10Y Treasury bei 4,00%.\n"
+        "Dollar/Liquidität/Volatilität: VIX NICHT VERFÜGBAR; DXY NICHT VERFÜGBAR.\n"
+        "2. Thesen-Update\n\n3. Ereignisradar\nKeine relevanten Ereignisse.\n"
+        "4. Assetklassenvergleich\n\n5. Technische Kandidaten\n"
+    )
+
+    # 19:58:28 UTC = 14:58:28 ET. VIX's 13:00 ET early close is complete,
+    # but Yahoo DX-Y.NYB's 17:00 ET daily close is not. The latest common
+    # completed observation is therefore the previous session, 2026-11-26.
+    result, findings = append_live_market_snapshot(
+        report,
+        fetcher=lambda requested: data,
+        as_of_time="2026-11-27T19:58:28+00:00",
+    )
+
+    assert findings == []
+    assert "Marktregime-Datenstichtag: 2026-11-26" in result
+    vix_line = next(line for line in result.splitlines() if line.startswith("- Volatilität VIX:"))
+    dxy_line = next(line for line in result.splitlines() if line.startswith("- Dollar-Proxy DXY"))
+    assert "Datenstichtag: 2026-11-26" in vix_line
+    assert "Datenstichtag: 2026-11-26" in dxy_line
+    assert "Datenstichtag: 2026-11-27" not in vix_line + dxy_line
+    expected_index = index.get_loc(pd.Timestamp("2026-11-26", tz="UTC"))
+    assert f": {18.0 + expected_index * 0.1:.2f} |" in vix_line
+    assert f": {100.0 + expected_index * 0.1:.2f} |" in dxy_line
+    assert "VIX: 18.00" not in next(
+        line for line in result.splitlines()
+        if line.startswith("Dollar/Liquidität/Volatilität:")
+    )

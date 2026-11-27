@@ -1200,6 +1200,9 @@ def test_m02_requires_both_source_closes_and_handles_dst_and_ice_holidays():
     # Cboe's published early close on Nov 27 is 13:00 ET; ICE is not
     # considered complete until its regular 17:00 ET close.
     assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-27T18:01:00+00:00")) == date(2026, 11, 26)
+    # The failed production run retrieved the report at 19:58:28 UTC; the
+    # common VIX/DXY close was still Nov 26 even though XNYS had closed early.
+    assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-27T19:58:28+00:00")) == date(2026, 11, 26)
     assert gate._m02_expected_common_session_date(datetime.fromisoformat("2026-11-27T22:01:00+00:00")) == date(2026, 11, 27)
 
 
