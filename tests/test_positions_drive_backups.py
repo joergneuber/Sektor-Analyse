@@ -545,3 +545,21 @@ def test_archive_marks_update_request_errors_as_mutation_ambiguous():
     assert captured.value.file_id == "master-1"
     assert drive.data["master-1"]["name"].startswith(BACKUP_PREFIX)
     assert drive.deleted == []
+
+
+def test_archive_accepts_timestamp_only_difference_with_matching_version():
+    drive = _FakeDrive([{
+        "id": "master-1", "name": "Offene_Positionen",
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "parents": ["folder"], "appProperties": {}, "trashed": False,
+        "version": "10", "modifiedTime": "2026-11-26T12:01:00Z",
+        "md5Checksum": "original",
+    }])
+    expected = {
+        "file_id": "master-1", "version": "10",
+        "modified_time": "2026-11-26T12:00:00Z",
+        "mime_type": "application/vnd.google-apps.spreadsheet",
+        "md5_checksum": "original",
+    }
+    result = archive_drive_backup(drive, "master-1", "folder", expected_revision=expected)
+    assert result["name"].startswith("Offene_Positionen.__BACKUP_")

@@ -959,3 +959,59 @@ def test_local_backup_unlink_failure_after_drive_commit_does_not_roll_back(tmp_p
     retained = list(tmp_path.glob("*.bak_*")) + list(tmp_path.glob(".*.bak_*"))
     assert retained, "lokales Transaktionsbackup muss für manuelle Bereinigung erhalten bleiben"
     assert "lokale Transaktionsbackup" in capsys.readouterr().out
+
+
+def test_drive_revision_check_allows_timestamp_only_difference(capsys):
+    baseline = {
+        "file_id": "source-id", "version": "17",
+        "modified_time": "2026-11-26T19:00:00.000Z",
+        "mime_type": "application/vnd.google-apps.spreadsheet",
+        "md5_checksum": "",
+    }
+
+    class Request:
+        def execute(self):
+            return {
+                "id": "source-id", "version": "17",
+                "modifiedTime": "2026-11-26T19:05:00.000Z",
+                "mimeType": baseline["mime_type"], "trashed": False,
+            }
+
+    class Files:
+        def get(self, **kwargs):
+            return Request()
+
+    class Drive:
+        def files(self):
+            return Files()
+
+    assert checker._verify_drive_source_baseline_with_service(Drive(), baseline)["version"] == "17"
+    assert "DRIVE-HINWEIS" in capsys.readouterr().out
+
+
+def test_drive_revision_check_reports_changed_protected_fields():
+    baseline = {
+        "file_id": "source-id", "version": "17",
+        "modified_time": "2026-11-26T19:00:00.000Z",
+        "mime_type": "application/vnd.google-apps.spreadsheet",
+        "md5_checksum": "",
+    }
+
+    class Request:
+        def execute(self):
+            return {
+                "id": "source-id", "version": "18",
+                "modifiedTime": baseline["modified_time"],
+                "mimeType": baseline["mime_type"], "trashed": False,
+            }
+
+    class Files:
+        def get(self, **kwargs):
+            return Request()
+
+    class Drive:
+        def files(self):
+            return Files()
+
+    with pytest.raises(RuntimeError, match="version: erwartet='17', aktuell='18'"):
+        checker._verify_drive_source_baseline_with_service(Drive(), baseline)
