@@ -2262,18 +2262,325 @@ def _validate_output_before_upload(df: pd.DataFrame, closed_df: pd.DataFrame):
         raise RuntimeError("Sicherheitsabbruch: Historie enthält einen leeren Ticker.")
 
 
-def _snapshot_google_sheet(drive, spreadsheet_id: str) -> Optional[str]:
-    """Erstellt vor dem produktiven Austausch eine temporäre Drive-Sicherung.
+def _snapshot_google_sheet(drive, spreadsheet_id: str, sheets=None) -> Optional[str]:
+    """Erstellt und verifiziert vor dem produktiven Austausch eine Drive-Kopie.
 
-    Die Sicherung bleibt dauerhaft als Notfallstand erhalten – auch nach
-    erfolgreichem Swap. Eine automatische Löschung ist ausdrücklich untersagt.
+    Die Kopie bleibt als eigenständige Notfallsicherung in Google Drive erhalten.
+    Ein bloß erfolgreicher Drive-copy-Aufruf genügt nicht: Der vollständige
+    Tabelleninhalt muss über die Sheets API denselben SHA-256-Fingerprint haben.
     """
+    if sheets is None:
+        raise RuntimeError(
+            "Drive-Snapshot kann ohne Sheets-Service nicht inhaltlich verifiziert werden."
+        )
+    source_fingerprint = google_sheet_content_sha256(sheets, spreadsheet_id)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     copied = drive.files().copy(
         fileId=spreadsheet_id,
         body={"name": f"{DRIVE_NAME} - Backup {stamp}", "parents": [FOLDER_ID]}
     ).execute()
-    return copied.get("id")
+    backup_id = str((copied or {}).get("id") or "").strip()
+    if not backup_id:
+        raise RuntimeError("Google-Drive-Backup wurde ohne Datei-ID zurückgegeben.")
+    backup_fingerprint = google_sheet_content_sha256(sheets, backup_id)
+    if backup_fingerprint != source_fingerprint:
+        raise RuntimeError(
+            "Google-Drive-Backup konnte nicht verifiziert werden: "
+            "Inhalt/Fingerprint der Kopie stimmt nicht mit dem Quell-Sheet überein. "
+            f"Backup-ID={backup_id}"
+        )
+    return backup_id
+
+
+def _cleanup_nonproductive_tabs(sheets, spreadsheet_id: str) -> list[str]:
+    """Entfernt nach erfolgreichem Upload alle Tabs außer den zwei Produktiv-Tabs.
+
+    Die Drive-Sicherung muss zu diesem Zeitpunkt bereits erstellt und verifiziert
+    sein. Die Löschung erfolgt atomar in einem batchUpdate; anschließend wird die
+    vollständige Tab-Liste erneut gelesen und exakt geprüft.
+    """
+    required_titles = ("Offene Positionen+Check", "Geschlossene Positionen")
+    response = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    sheet_items = response.get("sheets", [])
+    properties = [
+        item.get("properties", {}) for item in sheet_items
+        if isinstance(item, dict) and isinstance(item.get("properties"), dict)
+    ]
+    titles = [str(item.get("title") or "") for item in properties]
+    for title in required_titles:
+        if titles.count(title) != 1:
+            raise RuntimeError(
+                "Tab-Bereinigung abgebrochen: Produktiv-Tab "
+                f"{title!r} ist nicht genau einmal vorhanden."
+            )
+    delete_items = [
+        item for item in properties
+        if item.get("title") not in required_titles
+    ]
+    if delete_items:
+        requests = [
+            {"deleteSheet": {"sheetId": item["sheetId"]}}
+            for item in delete_items
+            if item.get("sheetId") is not None
+        ]
+        if len(requests) != len(delete_items):
+            raise RuntimeError(
+                "Tab-Bereinigung abgebrochen: Ein zusätzlicher Tab besitzt keine Sheet-ID."
+            )
+        _google_batch_update_with_retry(
+            sheets, spreadsheet_id, {"requests": requests},
+            context="Entfernen temporärer und historischer Backup-Tabs",
+        )
+
+    verified = sheets.spreadsheets().get(
+        spreadsheetId=spreadsheet_id, fields="sheets.properties"
+    ).execute()
+    final_properties = [
+        item.get("properties", {}) for item in verified.get("sheets", [])
+        if isinstance(item, dict) and isinstance(item.get("properties"), dict)
+    ]
+    final_titles = [str(item.get("title") or "") for item in final_properties]
+    if final_titles.count(required_titles[0]) != 1 or final_titles.count(required_titles[1]) != 1:
+        raise RuntimeError(
+            "Tab-Bereinigung fehlgeschlagen: Die beiden Produktiv-Tabs sind nicht eindeutig vorhanden."
+        )
+    if set(final_titles) != set(required_titles) or len(final_titles) != 2:
+        raise RuntimeError(
+            "Tab-Bereinigung fehlgeschlagen: Es sind weiterhin zusätzliche Tabs vorhanden: "
+            f"{final_titles}"
+        )
+    return [str(item.get("title") or "") for item in delete_items]
+
+
+
+def _sheet_cell_fingerprint(value):
+    """Normalize Sheets API scalar values without hiding content differences."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return ("blank", "")
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, (int, float, np.number)):
+        number = float(value)
+        if not math.isfinite(number):
+            return ("number", str(value))
+        return ("number", round(number, 10))
+    return ("text", str(value))
+
+
+def _normalized_sheet_matrix(rows, width: int) -> list[list[tuple]]:
+    """Return a rectangular, trailing-blank-insensitive but cell-exact matrix."""
+    normalized = []
+    for raw in rows or []:
+        row = list(raw[:width])
+        row.extend([""] * (width - len(row)))
+        cells = [_sheet_cell_fingerprint(value) for value in row]
+        while cells and cells[-1] == ("blank", ""):
+            cells.pop()
+        normalized.append(cells)
+    while normalized and not normalized[-1]:
+        normalized.pop()
+    return normalized
+
+
+def _verify_open_tab_full_content(sheets, spreadsheet_id: str, expected_upload_values: list[list]) -> list[list]:
+    """Compare every cell of the productive open tab against the upload payload."""
+    response = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range="'Offene Positionen+Check'!A:ZZZ",
+        valueRenderOption="UNFORMATTED_VALUE",
+        dateTimeRenderOption="SERIAL_NUMBER",
+    ).execute()
+    actual = response.get("values", [])
+    expected = _normalized_sheet_matrix(expected_upload_values, len(HEADERS))
+    observed = _normalized_sheet_matrix(actual, len(HEADERS))
+    if observed != expected:
+        max_rows = max(len(expected), len(observed))
+        mismatch = None
+        for row_index in range(max_rows):
+            exp_row = expected[row_index] if row_index < len(expected) else None
+            got_row = observed[row_index] if row_index < len(observed) else None
+            if exp_row != got_row:
+                mismatch = row_index + 1
+                break
+        raise RuntimeError(
+            "Vollständige Tab-1-Inhaltsprüfung fehlgeschlagen: mindestens eine Zelle "
+            f"weicht vom erwarteten Upload ab (erste abweichende Zeile={mismatch})."
+        )
+    # The full-width read also rejects unexpected non-empty cells beyond HEADERS.
+    for row_number, row in enumerate(actual, start=1):
+        if len(row) > len(HEADERS) and any(
+            _sheet_cell_fingerprint(value) != ("blank", "")
+            for value in row[len(HEADERS):]
+        ):
+            raise RuntimeError(
+                "Vollständige Tab-1-Inhaltsprüfung fehlgeschlagen: "
+                f"unerwartete Zusatzwerte hinter Spalte {len(HEADERS)} in Zeile {row_number}."
+            )
+    # Preserve the established consumer-CSV contract: export the formatted
+    # values (German dates/decimal presentation), not raw Sheets serials.
+    formatted = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id, range="'Offene Positionen+Check'!A:ZZZ"
+    ).execute().get("values", [])
+    if len(formatted) != len(expected):
+        raise RuntimeError(
+            "Tab-1-Readback änderte seine Zeilenanzahl zwischen Inhaltsprüfung "
+            "und formatiertem CSV-Export."
+        )
+    return formatted
+
+
+
+def _expected_history_records(preflight_rows, incoming_df: pd.DataFrame) -> dict[tuple, list]:
+    """Build the full append-only expected archive, preserving old rows on key collisions."""
+    expected: dict[tuple, list] = {}
+    if preflight_rows and len(preflight_rows) >= 2:
+        header = [str(value).strip() for value in preflight_rows[1]]
+        if header not in (HISTORY_HEADERS, HISTORY_DISPLAY_HEADERS):
+            raise RuntimeError("Historien-Sollbestand kann wegen eines ungültigen Preflight-Headers nicht gebildet werden.")
+        for raw in preflight_rows[2:]:
+            if not any(str(value).strip() for value in raw):
+                continue
+            item = {column: (raw[index] if index < len(raw) else "")
+                    for index, column in enumerate(HISTORY_HEADERS)}
+            key = _history_key(item)
+            if key in expected:
+                raise RuntimeError(f"Historien-Sollbestand enthält doppelte Identität: {key}")
+            expected[key] = [item[column] for column in HISTORY_HEADERS]
+
+    if incoming_df is not None and not incoming_df.empty:
+        for _, source_row in incoming_df.iterrows():
+            item = {column: source_row.get(column, "") for column in HISTORY_HEADERS}
+            key = _history_key(item)
+            if key in expected:
+                continue  # append-only contract: existing historical facts win
+            item["Performance_Seit_Einstieg%"] = canonical_closed_performance_points(item)
+            expected[key] = [item[column] for column in HISTORY_HEADERS]
+    return expected
+
+
+def _canonical_history_cell(value, column: str, row_number: int):
+    if column in {"Einstiegsdatum", "Ausstiegsdatum"}:
+        if value is None or str(value).strip() == "":
+            return ""
+        return _date_to_sheets_serial(value, column, row_number, strict=True)
+    if column in HISTORY_NUMERIC_COLUMNS:
+        if value is None or str(value).strip() == "":
+            return ""
+        parsed = parse_number(value)
+        return parsed if parsed is not None else value
+    return "" if value is None else str(value)
+
+
+def _verify_history_full_content(
+    sheets, spreadsheet_id: str, expected_records: dict[tuple, list]
+) -> list[list]:
+    """Compare every persisted history field, keyed by immutable trade identity."""
+    response = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'Geschlossene Positionen'!A1:{_column_letter(len(HISTORY_SORT_HEADERS))}",
+        valueRenderOption="UNFORMATTED_VALUE",
+        dateTimeRenderOption="SERIAL_NUMBER",
+    ).execute()
+    rows = response.get("values", [])
+    if len(rows) < 2 or [str(value).strip() for value in rows[1][:len(HISTORY_DISPLAY_HEADERS)]] != HISTORY_DISPLAY_HEADERS:
+        raise RuntimeError("Vollständige Tab-2-Inhaltsprüfung fehlgeschlagen: Header/Spaltenvertrag stimmt nicht.")
+    for row_number, raw in enumerate(rows, start=1):
+        if len(raw) > len(HISTORY_DISPLAY_HEADERS) and any(
+            _sheet_cell_fingerprint(value) != ("blank", "")
+            for value in raw[len(HISTORY_DISPLAY_HEADERS):]
+        ):
+            raise RuntimeError(
+                "Vollständige Tab-2-Inhaltsprüfung fehlgeschlagen: "
+                f"temporäre Sortierspalten sind in Zeile {row_number} nicht leer."
+            )
+
+    observed: dict[tuple, list] = {}
+    observed_order = []
+    for row_number, raw in enumerate(rows[2:], start=3):
+        if not any(str(value).strip() for value in raw):
+            continue
+        item = {column: (raw[index] if index < len(raw) else "")
+                for index, column in enumerate(HISTORY_HEADERS)}
+        key = _history_key(item)
+        if key in observed:
+            raise RuntimeError(f"Vollständige Tab-2-Inhaltsprüfung: doppelter Trade {key}.")
+        observed[key] = [item[column] for column in HISTORY_HEADERS]
+        observed_order.append((key, raw))
+
+    if set(observed) != set(expected_records):
+        missing = len(set(expected_records) - set(observed))
+        unexpected = len(set(observed) - set(expected_records))
+        raise RuntimeError(
+            "Vollständige Tab-2-Inhaltsprüfung fehlgeschlagen: "
+            f"fehlende Trades={missing}, unerwartete Trades={unexpected}."
+        )
+
+    for key, expected_row in expected_records.items():
+        actual_row = observed[key]
+        for index, column in enumerate(HISTORY_HEADERS):
+            expected_value = _canonical_history_cell(expected_row[index], column, 0)
+            actual_value = _canonical_history_cell(actual_row[index], column, 0)
+            if _sheet_cell_fingerprint(expected_value) != _sheet_cell_fingerprint(actual_value):
+                raise RuntimeError(
+                    "Vollständige Tab-2-Inhaltsprüfung fehlgeschlagen: "
+                    f"Trade {key}, Spalte {column!r} enthält einen abweichenden Wert."
+                )
+
+    # Nr. is a display index, but must still be contiguous and positions must
+    # retain the exact order established by _sort_and_number_closed_history.
+    for expected_number, (_key, raw) in enumerate(observed_order, start=1):
+        actual_number = raw[len(HISTORY_HEADERS)] if len(raw) > len(HISTORY_HEADERS) else None
+        if parse_number(actual_number) != float(expected_number):
+            raise RuntimeError(
+                "Vollständige Tab-2-Inhaltsprüfung fehlgeschlagen: "
+                f"Nr. in Datenzeile {expected_number} ist nicht fortlaufend."
+            )
+    if len(observed) != len(expected_records):
+        raise RuntimeError("Vollständige Tab-2-Inhaltsprüfung fehlgeschlagen: Zeilenanzahl stimmt nicht.")
+    return rows
+
+
+def _verify_tabs_after_cleanup(
+    sheets, spreadsheet_id: str, expected_open_values: list[list],
+    expected_history_readback: list[list],
+) -> None:
+    """Re-read both complete productive tabs after deleting all extra tabs."""
+    _verify_open_tab_full_content(sheets, spreadsheet_id, expected_open_values)
+    history_width = len(HISTORY_DISPLAY_HEADERS)
+    response = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'Geschlossene Positionen'!A1:{_column_letter(len(HISTORY_SORT_HEADERS))}",
+    ).execute()
+    actual_history = response.get("values", [])
+    expected_matrix = _normalized_sheet_matrix(expected_history_readback, history_width)
+    actual_matrix = _normalized_sheet_matrix(actual_history, history_width)
+    if actual_matrix != expected_matrix:
+        raise RuntimeError(
+            "Vollständige Tab-2-Nachprüfung nach Bereinigung fehlgeschlagen: "
+            "mindestens eine Zelle weicht vom unmittelbar zuvor verifizierten "
+            "append-only Historienstand ab."
+        )
+    for row_number, raw in enumerate(actual_history, start=1):
+        if len(raw) > history_width and any(
+            _sheet_cell_fingerprint(value) != ("blank", "")
+            for value in raw[history_width:]
+        ):
+            raise RuntimeError(
+                "Tab-2-Nachprüfung nach Bereinigung fehlgeschlagen: "
+                f"temporäre Sortierspalten sind in Zeile {row_number} nicht leer."
+            )
+    if len(actual_history) < 2 or [str(x).strip() for x in actual_history[1][:history_width]] != HISTORY_DISPLAY_HEADERS:
+        raise RuntimeError("Tab-2-Nachprüfung fehlgeschlagen: Header oder Nr.-Spalte ist verändert.")
+
+
+def _column_letter(n: int) -> str:
+    result = ""
+    while n:
+        n, remainder = divmod(n - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
 
 
 def _history_key(row) -> tuple:
@@ -3358,6 +3665,8 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     existing_titles = [s["properties"]["title"] for s in existing]
 
     # Fail-closed Preflight: vor Snapshot, Locale-Update oder irgendeinem Sheet-Schreibzugriff.
+    preflight_rows = []
+    preflight_keys = set()
     if not is_new_master:
         if existing_titles.count("Geschlossene Positionen") != 1:
             raise RuntimeError(
@@ -3368,7 +3677,6 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         preflight_header = [str(x).strip() for x in preflight_rows[1]] if len(preflight_rows) >= 2 else []
         if preflight_header not in (HISTORY_HEADERS, HISTORY_DISPLAY_HEADERS):
             raise RuntimeError("Sicherheitsabbruch: Tab-2-Header fehlt oder ist nicht exakt.")
-        preflight_keys = set()
         preflight_count = 0
         for raw in preflight_rows[2:]:
             if not any(str(value).strip() for value in raw):
@@ -3396,6 +3704,7 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
     # Verbindliche Abschlussquelle: ausschließlich aktuell Gestoppt/Verkauft in der Masterquelle.
     # Ein bloßes Verschwinden aus Tab 1 ist niemals ein Abschlussereignis.
     closed_for_append = closed_df.copy()
+    expected_history_records = _expected_history_records(preflight_rows, closed_for_append)
 
     old_main_title = None
     if "Offene Positionen+Check" not in existing_titles and existing:
@@ -3430,11 +3739,14 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
 
     try:
         if existing and not is_new_master:
-            backup_id = _snapshot_google_sheet(drive, spreadsheet_id)
+            backup_id = _snapshot_google_sheet(drive, spreadsheet_id, sheets=sheets)
             print(f"DATENSCHUTZ: Backup des bisherigen Google Sheets erstellt | ID={backup_id}")
 
         # 1) Tab 1 vollständig vorbereiten – produktiver Tab bleibt unberührt.
         _write_sheet(sheets, spreadsheet_id, temp_open, values, widths, 2, target_title=temp_open)
+        # Keep the exact canonical payload used by _write_sheet for a later
+        # all-cell comparison against the productive tab (including date serials).
+        expected_open_upload_values = _canonicalize_sheet_dates(values)
 
         # 2) Historie append-only vorbereiten/verifizieren – niemals durch Snapshot ersetzen.
         appended_history = _append_missing_history_rows(
@@ -3449,19 +3761,16 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         # verpflichtend und bricht bei fehlendem/inkonsistentem Tab 2 weiterhin ab.
         _align_history_date_columns_best_effort(sheets, spreadsheet_id)
 
-        def _column_letter(n: int) -> str:
-            result = ""
-            while n:
-                n, remainder = divmod(n - 1, 26)
-                result = chr(65 + remainder) + result
-            return result
-
         # 3) Tab 2 VOR dem produktiven Tab-1-Swap verifizieren.
         hist_ss = sheets.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
             range=f"Geschlossene Positionen!A1:{_column_letter(len(HISTORY_DISPLAY_HEADERS))}",
         ).execute()
         hist_rows = hist_ss.get("values", [])
+        # Fachliche Vollprüfung aller Archivfelder gegen den unveränderlichen
+        # Altbestand plus die erwarteten neuen Trades. Die Anzeige-Nummerierung
+        # wird separat auf lückenlose Reihenfolge geprüft.
+        _verify_history_full_content(sheets, spreadsheet_id, expected_history_records)
         if len(hist_rows) < 2:
             raise RuntimeError("Historien-Verifikation fehlgeschlagen: Geschlossene Positionen ist leer oder unvollständig.")
         expected_hist_header = [str(x).strip() for x in HISTORY_HEADERS]
@@ -3533,14 +3842,11 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         swapped = True
 
         # 5) Produktiven Tab 1 direkt nach dem Swap prüfen.
-        verify_ss = sheets.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id,
-            # Read the entire available sheet width. Limiting the request to
-            # len(HEADERS) made the extra-column guard below ineffective because
-            # Google could never return values beyond the expected schema.
-            range="'Offene Positionen+Check'!A:ZZZ",
-        ).execute()
-        verify_rows = verify_ss.get("values", [])
+        # Vollständiger Zellvergleich gegen den kanonischen Upload, nicht nur
+        # Header/Ticker/Status-Stichproben. Der breite Read erkennt Zusatzspalten.
+        verify_rows = _verify_open_tab_full_content(
+            sheets, spreadsheet_id, expected_open_upload_values
+        )
         if len(verify_rows) < 2:
             raise RuntimeError("Produktiv-Verifikation fehlgeschlagen: Offene Positionen+Check ist leer oder unvollständig.")
         expected_header = [str(x).strip() for x in HEADERS]
@@ -3614,7 +3920,13 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         #    eines bestehenden Masters nicht zurückrollen: Tab 1 und Tab 2 sind fachlich
         #    bereits konsistent, nur der Metadaten-Zeitstempel bleibt ggf. alt.
         try:
-            _update_closed_history_timestamp(sheets, spreadsheet_id)
+            verified_history_timestamp = _update_closed_history_timestamp(sheets, spreadsheet_id)
+            # hist_rows is the full pre-cleanup archive snapshot; account for the
+            # one intentional A1 metadata change before comparing after cleanup.
+            if hist_rows and hist_rows[0]:
+                hist_rows[0][0] = verified_history_timestamp
+            else:
+                hist_rows = [[verified_history_timestamp]]
         except Exception as timestamp_exc:
             timestamp_update_failed = True
             if is_new_master:
@@ -3642,8 +3954,9 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                 f"Ursache: {timestamp_exc}"
             ) from timestamp_exc
 
-        # 8) Sicherungen bleiben dauerhaft erhalten; keine automatische Löschung.
-        print("DATENSCHUTZ: Produktiv- und Drive-Backups bleiben dauerhaft erhalten.")
+        # 8) Die eigenständige Drive-Sicherung bleibt erhalten. Backup-Tabs
+        #    werden erst nach vollständiger Upload-/Readback-Verifikation entfernt.
+        print("SICHERUNG: Google-Drive-Backup bleibt als eigenständige Datei erhalten.")
 
     except Exception as exc:
         if staged_open_csv:
@@ -3672,6 +3985,35 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                 f"Der verifizierte Tab-1-Stand wurde nicht zurückgerollt: {exc}"
             ) from exc
         raise RuntimeError(f"Google-Upload sicher abgebrochen: {exc}") from exc
+
+    # Jede Bereinigung benötigt eine verifizierte unabhängige Drive-Kopie.
+    # Bei bestehenden Mastern sichert sie den vorherigen Stand (vor dem Update);
+    # bei einer INIT-Neuanlage wird nach erfolgreichem Aufbau der fertige Stand
+    # gesichert, bevor temporäre Tabs entfernt werden.
+    if not backup_id:
+        backup_id = _snapshot_google_sheet(drive, spreadsheet_id, sheets=sheets)
+        print(f"DATENSCHUTZ: Verifiziertes Drive-Backup vor Tab-Bereinigung erstellt | ID={backup_id}")
+    if not backup_id:
+        raise RuntimeError(
+            "Tab-Bereinigung gesperrt: Es liegt keine verifizierte Google-Drive-Sicherung vor."
+        )
+
+    # Die Drive-Kopie wurde inhaltlich verifiziert. Erst
+    # nachdem beide Produktiv-Tabs und der Zeitstempel erfolgreich geprüft sind,
+    # werden sämtliche zusätzlichen Tabs aus dem Master entfernt.
+    removed_tabs = _cleanup_nonproductive_tabs(sheets, spreadsheet_id)
+    # Final readback after deletion: verify both complete tab matrices again.
+    # The independent Drive backup remains untouched if this final gate fails.
+    _verify_tabs_after_cleanup(
+        sheets, spreadsheet_id, expected_open_upload_values, hist_rows
+    )
+    print(
+        "SICHERHEIT: Beide Produktiv-Tabs nach Bereinigung vollständig erneut "
+        "eingelesen und zellweise verifiziert. "
+        "Google-Sheet enthält ausschließlich "
+        "'Offene Positionen+Check' und 'Geschlossene Positionen'. "
+        f"Entfernte zusätzliche Tabs={len(removed_tabs)}"
+    )
 
     # Reaching this point means all Sheets/Drive checks, timestamp handling,
     # master finalization and rollback-capable operations completed successfully.
