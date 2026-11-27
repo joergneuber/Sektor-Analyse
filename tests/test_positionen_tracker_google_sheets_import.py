@@ -588,3 +588,604 @@ def test_new_eu_positions_receive_quote_performance_and_duplicate_ticker_stays_s
         assert updated.loc[idx, "Performance_Seit_Einstieg%"] == pytest.approx(expected)
         assert updated.loc[idx, "Status"] == "Offen"
     assert [ticker for ticker, _ in calls] == ["VNA.DE", "PPFD.SG", "SPYI.DE", "LI7U.DE", "VNA.DE"]
+
+
+
+def test_tracker_persists_drive_revision_baseline_atomically(tmp_path, monkeypatch):
+    import importlib.util
+    import json
+    import sys
+    import types
+    from pathlib import Path
+
+    # Reuse the existing import fixture so optional integrations never connect.
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    local = tmp_path / "Offene_Positionen.csv"
+    local.write_bytes(b"Ticker;Status\nABC;Offen\n")
+    baseline_path = tmp_path / ".offene_positionen_drive_baseline.json"
+    monkeypatch.setattr(tracker, "DRIVE_BASELINE_FILE", str(baseline_path))
+
+    class Request:
+        def execute(self):
+            return {
+                "id": "drive-id-1", "name": "Offene_Positionen",
+                "mimeType": tracker.SHEET_MIME, "version": "42",
+                "modifiedTime": "2026-11-26T20:00:00.000Z",
+                "md5Checksum": "abc123", "trashed": False,
+            }
+
+    class Files:
+        def get(self, **kwargs):
+            assert kwargs["fileId"] == "drive-id-1"
+            assert "version" in kwargs["fields"]
+            return Request()
+
+    class Service:
+        def files(self):
+            return Files()
+
+    tracker.speichere_drive_quell_baseline(Service(), "drive-id-1", str(local))
+    payload = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert payload["file_id"] == "drive-id-1"
+    assert payload["version"] == "42"
+    assert payload["modified_time"] == "2026-11-26T20:00:00.000Z"
+    assert payload["local_source_sha256"] == tracker._sha256_local_file(str(local))
+    assert baseline_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_tracker_refuses_to_persist_baseline_without_remote_revision(monkeypatch, tmp_path):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    local = tmp_path / "Offene_Positionen.csv"
+    local.write_text("Ticker;Status\nABC;Offen\n", encoding="utf-8")
+
+    class Request:
+        def execute(self):
+            return {"id": "drive-id-1", "name": "Offene_Positionen", "trashed": False}
+
+    class Files:
+        def get(self, **kwargs):
+            return Request()
+
+    class Service:
+        def files(self):
+            return Files()
+
+    with pytest.raises(RuntimeError, match="Remote-Revision|belastbar erfasst"):
+        tracker.speichere_drive_quell_baseline(Service(), "drive-id-1", str(local))
+
+
+def test_tracker_remote_revision_guard_rejects_manual_edit_before_old_file_delete(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    expected = {
+        "file_id": "drive-id-1", "version": "42",
+        "modified_time": "2026-11-26T20:00:00.000Z",
+        "mime_type": tracker.SHEET_MIME, "md5_checksum": "",
+    }
+
+    class Request:
+        def execute(self):
+            return {
+                "id": "drive-id-1", "version": "43",
+                "modifiedTime": "2026-11-26T20:01:00.000Z",
+                "mimeType": tracker.SHEET_MIME, "md5Checksum": "",
+                "trashed": False,
+            }
+
+    class Files:
+        def get(self, **kwargs):
+            return Request()
+
+    class Service:
+        def files(self):
+            return Files()
+
+    with pytest.raises(RuntimeError, match="extern geändert"):
+        tracker._pruefe_drive_quellrevision(Service(), expected)
+
+
+def test_drive_baseline_loader_rejects_local_file_drift(tmp_path, monkeypatch):
+    import json
+    import hashlib
+
+    checker = __import__("offene_positionen_check")
+    local = tmp_path / "Offene_Positionen.csv"
+    local.write_bytes(b"Ticker;Status\nABC;Offen\n")
+    baseline_path = tmp_path / ".offene_positionen_drive_baseline.json"
+    payload = {
+        "schema_version": 1, "file_id": "drive-id-1", "version": "42",
+        "modified_time": "2026-11-26T20:00:00.000Z",
+        "mime_type": "application/vnd.google-apps.spreadsheet",
+        "local_source_sha256": hashlib.sha256(local.read_bytes()).hexdigest(),
+    }
+    baseline_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(checker, "DRIVE_BASELINE_FILE", str(baseline_path))
+    local.write_bytes(local.read_bytes() + b"# manual local edit\n")
+
+    with pytest.raises(RuntimeError, match="stimmt nicht mehr mit dem beim Tracker-Upload"):
+        checker._load_drive_source_baseline(str(local))
+
+
+def test_tracker_upload_cleans_new_temp_and_keeps_old_drive_file_on_revision_conflict(monkeypatch, tmp_path):
+    import io
+
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    local = tmp_path / "positions.csv"
+    local.write_text("Ticker;Einstiegsdatum;Status\nABC;01.01.2026;Offen\n", encoding="utf-8")
+    monkeypatch.setattr(tracker, "_finde_upload_mit_token", lambda *a, **k: None)
+    monkeypatch.setattr(tracker, "erstelle_sheet_upload_stream", lambda *a, **k: io.BytesIO(b"xlsx"))
+    monkeypatch.setattr(tracker, "MediaIoBaseUpload", lambda *a, **k: object())
+    deleted = []
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self, **kwargs):
+            return self.result
+
+    class Files:
+        def __init__(self):
+            self.new_upload = None
+
+        def create(self, body, **kwargs):
+            self.new_upload = {
+                "id": "new-upload-id",
+                "name": body["name"],
+                "mimeType": body["mimeType"],
+                "parents": list(body["parents"]),
+                "appProperties": dict(body["appProperties"]),
+                "trashed": False,
+            }
+            return Request({
+                "id": "new-upload-id",
+                "name": "Offene_Positionen",
+                "mimeType": tracker.SHEET_MIME,
+                "appProperties": dict(body["appProperties"]),
+            })
+
+        def get(self, fileId, **kwargs):
+            if fileId == "new-upload-id":
+                return Request(dict(self.new_upload))
+            return Request({
+                "id": "old-source-id", "name": "Offene_Positionen",
+                "mimeType": tracker.SHEET_MIME, "version": "99",
+                "modifiedTime": "2026-11-26T21:00:00.000Z", "trashed": False,
+            })
+
+        def delete(self, fileId, **kwargs):
+            deleted.append(fileId)
+            self.new_upload["trashed"] = True
+            return Request()
+
+    class Service:
+        def __init__(self):
+            self._files = Files()
+
+        def files(self):
+            return self._files
+
+    expected = {
+        "file_id": "old-source-id", "version": "98",
+        "modified_time": "2026-11-26T20:00:00.000Z",
+        "mime_type": tracker.SHEET_MIME, "md5_checksum": "",
+    }
+    with pytest.raises(RuntimeError, match="extern geändert"):
+        tracker.hochladen(
+            Service(), str(local), "folder-id", "old-source-id",
+            expected_old_revision=expected,
+        )
+
+    # Only the just-created temporary upload may be cleaned up. The externally
+    # edited source remains present and is never deleted by the tracker.
+    assert deleted == ["new-upload-id"]
+
+
+def test_tracker_upload_captures_baseline_after_upload_and_sheet_formatting(monkeypatch, tmp_path):
+    import io
+    import json
+
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    local = tmp_path / "positions.csv"
+    local.write_text("Ticker;Einstiegsdatum;Status\nABC;01.01.2026;Offen\n", encoding="utf-8")
+    baseline_path = tmp_path / ".offene_positionen_drive_baseline.json"
+    monkeypatch.setattr(tracker, "DRIVE_BASELINE_FILE", str(baseline_path))
+    monkeypatch.setattr(tracker, "_finde_upload_mit_token", lambda *a, **k: None)
+    monkeypatch.setattr(tracker, "erstelle_sheet_upload_stream", lambda *a, **k: io.BytesIO(b"xlsx"))
+    monkeypatch.setattr(tracker, "MediaIoBaseUpload", lambda *a, **k: object())
+    order = []
+    monkeypatch.setattr(tracker, "friere_erste_zwei_zeilen_ein", lambda *a, **k: order.append("format"))
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self, **kwargs):
+            return self.result
+
+    class Files:
+        def create(self, **kwargs):
+            order.append("create")
+            return Request({"id": "new-drive-id", "name": "Offene_Positionen"})
+        def get(self, **kwargs):
+            order.append("baseline-get")
+            return Request({
+                "id": "new-drive-id", "name": "Offene_Positionen",
+                "mimeType": tracker.SHEET_MIME, "version": "7",
+                "modifiedTime": "2026-11-26T21:20:00.000Z", "trashed": False,
+            })
+
+    class Service:
+        def files(self):
+            return Files()
+
+    new_id = tracker.hochladen(Service(), str(local), "folder-id", None, creds=object())
+    assert new_id == "new-drive-id"
+    assert order == ["create", "format", "baseline-get"]
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert baseline["file_id"] == "new-drive-id"
+    assert baseline["version"] == "7"
+
+
+def test_tracker_success_archives_old_master_for_14_day_retention(monkeypatch, tmp_path):
+    import io
+
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    local = tmp_path / "positions.csv"
+    local.write_text(
+        "Ticker;Einstiegsdatum;Status\nABC;01.01.2026;Offen\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tracker, "_finde_upload_mit_token", lambda *a, **k: None)
+    monkeypatch.setattr(tracker, "erstelle_sheet_upload_stream", lambda *a, **k: io.BytesIO(b"xlsx"))
+    monkeypatch.setattr(tracker, "MediaIoBaseUpload", lambda *a, **k: object())
+    monkeypatch.setattr(tracker, "_pruefe_drive_quellrevision", lambda *a, **k: {"file_id": "old-master"})
+    monkeypatch.setattr(tracker, "friere_erste_zwei_zeilen_ein", lambda *a, **k: None)
+    monkeypatch.setattr(tracker, "speichere_drive_quell_baseline", lambda *a, **k: None)
+    cleanup_calls = []
+    def fail_cleanup(service, folder_id):
+        cleanup_calls.append((service, folder_id))
+        raise RuntimeError("simulierter Drive-Loeschfehler")
+
+    monkeypatch.setattr(tracker, "cleanup_expired_drive_backups", fail_cleanup)
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+        def execute(self, **kwargs):
+            return self.result
+
+    class Files:
+        def __init__(self):
+            self.old = {
+                "id": "old-master", "name": "Offene_Positionen",
+                "mimeType": tracker.SHEET_MIME, "parents": ["folder-id"],
+                "appProperties": {"existing": "preserved"}, "trashed": False,
+            }
+            self.deleted = []
+        def create(self, **kwargs):
+            return Request({"id": "new-master", "name": tracker.DRIVE_NAME})
+        def get(self, **kwargs):
+            return Request(dict(self.old))
+        def update(self, **kwargs):
+            self.old.update(kwargs["body"])
+            return Request(dict(self.old))
+        def delete(self, **kwargs):
+            self.deleted.append(kwargs["fileId"])
+            return Request()
+
+    class Service:
+        def __init__(self):
+            self._files = Files()
+        def files(self):
+            return self._files
+
+    service = Service()
+    new_id = tracker.hochladen(
+        service, str(local), "folder-id", "old-master",
+        expected_old_revision={"file_id": "old-master"}, creds=object(),
+    )
+
+    assert new_id == "new-master"
+    assert service._files.old["name"].startswith("Offene_Positionen.__BACKUP_")
+    assert service._files.old["appProperties"]["nmm_backup_purpose"] == "positions-master-v1"
+    assert service._files.old["appProperties"]["existing"] == "preserved"
+    assert service._files.deleted == []
+    assert cleanup_calls == [(service, "folder-id")]
+
+
+def test_finde_datei_rejects_multiple_active_native_position_masters(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+
+    class Request:
+        def execute(self, **kwargs):
+            return {"files": [
+                {"id": "master-a", "name": tracker.DRIVE_NAME, "mimeType": tracker.SHEET_MIME},
+                {"id": "master-b", "name": tracker.DRIVE_NAME, "mimeType": tracker.SHEET_MIME},
+            ]}
+
+    class Files:
+        def list(self, **kwargs):
+            return Request()
+
+    class Service:
+        def files(self):
+            return Files()
+
+    with pytest.raises(RuntimeError, match="Mehrere aktive native Positionsmaster"):
+        tracker.finde_datei(Service(), "folder-id")
+
+
+def test_finde_datei_preserves_single_native_plus_legacy_csv_transition(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+
+    class Request:
+        def execute(self, **kwargs):
+            return {"files": [
+                {"id": "legacy-csv", "name": tracker.DRIVE_NAME_ALT, "mimeType": "text/csv"},
+                {"id": "native-sheet", "name": tracker.DRIVE_NAME, "mimeType": tracker.SHEET_MIME},
+            ]}
+
+    class Files:
+        def list(self, **kwargs):
+            return Request()
+
+    class Service:
+        def files(self):
+            return Files()
+
+    assert tracker.finde_datei(Service(), "folder-id") == (
+        "native-sheet", tracker.SHEET_MIME
+    )
+
+
+def test_tracker_archive_pre_mutation_conflict_deletes_only_its_verified_upload(
+    monkeypatch, tmp_path
+):
+    import io
+
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    local = tmp_path / "positions.csv"
+    local.write_text(
+        "Ticker;Einstiegsdatum;Status\nABC;01.01.2026;Offen\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tracker, "_finde_upload_mit_token", lambda *a, **k: None)
+    monkeypatch.setattr(
+        tracker, "erstelle_sheet_upload_stream", lambda *a, **k: io.BytesIO(b"xlsx")
+    )
+    monkeypatch.setattr(tracker, "MediaIoBaseUpload", lambda *a, **k: object())
+
+    class Request:
+        def __init__(self, callback):
+            self.callback = callback
+
+        def execute(self, **kwargs):
+            return self.callback()
+
+    class Files:
+        def __init__(self):
+            self.old_gets = 0
+            self.data = {}
+            self.deleted = []
+            self.updated = []
+
+        def create(self, body, **kwargs):
+            self.data["new-upload"] = {
+                "id": "new-upload",
+                "name": body["name"],
+                "mimeType": body["mimeType"],
+                "parents": list(body["parents"]),
+                "appProperties": dict(body["appProperties"]),
+                "trashed": False,
+            }
+            return Request(lambda: {
+                key: self.data["new-upload"][key]
+                for key in ("id", "name", "mimeType", "appProperties")
+            })
+
+        def get(self, fileId, fields=None):
+            def result():
+                if fileId == "old-master":
+                    self.old_gets += 1
+                    version = "10" if self.old_gets == 1 else "11"
+                    return {
+                        "id": "old-master",
+                        "name": tracker.DRIVE_NAME,
+                        "mimeType": tracker.SHEET_MIME,
+                        "parents": ["folder-id"],
+                        "appProperties": {},
+                        "version": version,
+                        "modifiedTime": (
+                            "2026-11-26T20:00:00Z"
+                            if version == "10"
+                            else "2026-11-26T21:00:00Z"
+                        ),
+                        "md5Checksum": "old-checksum",
+                        "trashed": False,
+                    }
+                return dict(self.data[fileId])
+            return Request(result)
+
+        def update(self, **kwargs):
+            self.updated.append(kwargs)
+            return Request(lambda: {})
+
+        def delete(self, fileId):
+            def result():
+                self.deleted.append(fileId)
+                self.data[fileId]["trashed"] = True
+                return {}
+            return Request(result)
+
+    class Service:
+        def __init__(self):
+            self._files = Files()
+
+        def files(self):
+            return self._files
+
+    service = Service()
+    expected = {
+        "file_id": "old-master",
+        "version": "10",
+        "modified_time": "2026-11-26T20:00:00Z",
+        "mime_type": tracker.SHEET_MIME,
+        "md5_checksum": "old-checksum",
+    }
+
+    with pytest.raises(RuntimeError, match="vor jeder Umbenennungs-Mutation"):
+        tracker.hochladen(
+            service, str(local), "folder-id", "old-master",
+            expected_old_revision=expected,
+        )
+
+    assert service._files.deleted == ["new-upload"]
+    assert service._files.updated == []
+    assert service._files.data["new-upload"]["trashed"] is True
+    # The old master was read but never renamed or deleted.
+    assert service._files.old_gets == 2
+
+
+def test_tracker_preserves_both_files_when_archive_mutation_state_is_ambiguous(
+    monkeypatch, tmp_path
+):
+    import io
+    from positions_drive_backups import DriveBackupArchiveMutationError
+
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    local = tmp_path / "positions.csv"
+    local.write_text(
+        "Ticker;Einstiegsdatum;Status\nABC;01.01.2026;Offen\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tracker, "_finde_upload_mit_token", lambda *a, **k: None)
+    monkeypatch.setattr(
+        tracker, "erstelle_sheet_upload_stream", lambda *a, **k: io.BytesIO(b"xlsx")
+    )
+    monkeypatch.setattr(tracker, "MediaIoBaseUpload", lambda *a, **k: object())
+    monkeypatch.setattr(tracker, "_pruefe_drive_quellrevision", lambda *a, **k: {})
+    monkeypatch.setattr(
+        tracker,
+        "archive_drive_backup",
+        lambda *a, **k: (_ for _ in ()).throw(
+            DriveBackupArchiveMutationError(
+                "simulierter Timeout nach Rename-Request", file_id="old-master"
+            )
+        ),
+    )
+
+    class Request:
+        def __init__(self, result=None):
+            self.result = result or {}
+
+        def execute(self, **kwargs):
+            return self.result
+
+    class Files:
+        def __init__(self):
+            self.deleted = []
+            self.created = []
+
+        def create(self, body, **kwargs):
+            self.created.append(dict(body))
+            return Request({
+                "id": "new-master",
+                "name": body["name"],
+                "mimeType": body["mimeType"],
+                "appProperties": dict(body["appProperties"]),
+            })
+
+        def delete(self, fileId):
+            self.deleted.append(fileId)
+            return Request()
+
+    class Service:
+        def __init__(self):
+            self._files = Files()
+
+        def files(self):
+            return self._files
+
+    service = Service()
+    with pytest.raises(RuntimeError, match="Endzustand ist aber nicht sicher bestätigbar"):
+        tracker.hochladen(
+            service, str(local), "folder-id", "old-master",
+            expected_old_revision={"file_id": "old-master"}, creds=object(),
+        )
+
+    assert service._files.deleted == []
+    assert len(service._files.created) == 1
+    assert service._files.created[0]["name"] == tracker.DRIVE_NAME
+
+
+def test_tracker_cleanup_refuses_to_delete_upload_with_foreign_token(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    deleted = []
+
+    class Request:
+        def execute(self, **kwargs):
+            return {
+                "id": "foreign-file",
+                "name": tracker.DRIVE_NAME,
+                "mimeType": tracker.SHEET_MIME,
+                "parents": ["folder-id"],
+                "appProperties": {"tracker_upload_token": "another-transaction"},
+                "trashed": False,
+            }
+
+    class Files:
+        def get(self, **kwargs):
+            return Request()
+
+        def delete(self, fileId):
+            deleted.append(fileId)
+            return Request()
+
+    class Service:
+        def files(self):
+            return Files()
+
+    with pytest.raises(RuntimeError, match="nicht eindeutig"):
+        tracker._sicher_loesche_tracker_upload(
+            Service(), "foreign-file", "folder-id", "this-transaction"
+        )
+    assert deleted == []
+
+
+def test_finde_datei_checks_all_drive_pages_for_duplicate_native_masters(monkeypatch):
+    tracker = _load_tracker_with_stubbed_integrations(monkeypatch)
+    calls = []
+
+    class Request:
+        def __init__(self, result):
+            self.result = result
+
+        def execute(self, **kwargs):
+            return self.result
+
+    class Files:
+        def list(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs.get("pageToken") is None:
+                return Request({
+                    "files": [{
+                        "id": "master-page-1",
+                        "name": tracker.DRIVE_NAME,
+                        "mimeType": tracker.SHEET_MIME,
+                    }],
+                    "nextPageToken": "page-2",
+                })
+            return Request({
+                "files": [{
+                    "id": "master-page-2",
+                    "name": tracker.DRIVE_NAME,
+                    "mimeType": tracker.SHEET_MIME,
+                }]
+            })
+
+    class Service:
+        def files(self):
+            return Files()
+
+    with pytest.raises(RuntimeError, match="Mehrere aktive native Positionsmaster"):
+        tracker.finde_datei(Service(), "folder-id")
+    assert len(calls) == 2
+    assert calls[1]["pageToken"] == "page-2"

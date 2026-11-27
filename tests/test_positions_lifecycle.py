@@ -383,7 +383,8 @@ def test_source_sync_refuses_ambiguous_master_and_keeps_old_source_backup():
     active = source[start:end]
     assert "if len(files) > 1" in active
     assert "es wird keine Datei willkürlich ausgewählt" in active
-    assert "Drive-Quellbackup bleibt dauerhaft erhalten" in active
+    assert "Drive-Quellbackup 14 Tage aufbewahren" in active
+    assert "archive_drive_backup(" in active
     assert "drive.files().delete(fileId=backup_id)" not in active
 
 
@@ -790,11 +791,21 @@ def test_source_sync_rejects_mixed_or_duplicate_candidates_before_any_drive_writ
         return Drive() if service == "drive" else object()
 
     monkeypatch.setattr(mod, "build", fake_build, raising=False)
+    monkeypatch.setattr(
+        mod, "_verify_drive_source_baseline_with_service",
+        lambda *args, **kwargs: {"file_id": "sheet-1"},
+    )
+    monkeypatch.setattr(mod, "_sha256_file", lambda *args, **kwargs: "local-hash")
     source = tmp_path / "Offene_Positionen.csv"
     source.write_text("Ticker;Status\nAAA;Offen\n", encoding="utf-8-sig")
 
     with pytest.raises(RuntimeError, match="mehrere gleichnamige Quelldateien"):
-        mod._sync_cleaned_source_to_drive(str(source), creds=object())
+        mod._sync_cleaned_source_to_drive(
+            str(source),
+            creds=object(),
+            expected_drive_state={"file_id": "sheet-1"},
+            expected_local_sha256="local-hash",
+        )
 
 
 
