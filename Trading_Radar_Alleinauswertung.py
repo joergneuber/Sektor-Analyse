@@ -20055,7 +20055,12 @@ def _trading_radar_treasury_provenienz_ergänzen(text, makro_text="", eingabedat
         r"|10\s*[- ]?year(?:\s+US)?\s+Treasury"
         r"|10\s*[- ]?year(?:\s+US)?\s+yield"
         r"|10\s*[- ]?jährig(?:er|e|en)?\s+US\s*[- ]?\s*(?:Treasury(?:\s*[- ]?\s*Zins)?|Staatsanleihen?zins|Rendite))"
-        r"\s*(?:\([^)]*\)\s*)?(?:(?::|=|bei\b|liegt\s+bei\b|beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
+        r"\s*(?:\([^)]*\)\s*)?"
+        # Accept the descriptive wording used in the live Gemini report while
+        # retaining the exact US-10Y instrument/value binding.
+        r"(?:[- ]?(?:Renditen?|Zins(?:en|satz)?|Yields?))?\s*"
+        r"(?:(?::|=|bei\b|liegt\s+bei\b|stabilisiert\s+sich\s+bei\b|"
+        r"beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
         r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*(?:%|Prozent)(?!\w)"
     )
 
@@ -20977,8 +20982,9 @@ def _trading_radar_unprovenanzierte_thesen_treasury_werte_sperren(text):
         )
         _US10Y_VALUE_AFTER_LABEL_RE = re.compile(
             r"(?i)^\s*(?:\([^)]*\)\s*)?"
-            r"(?:(?::|=|bei\b|liegt\s+bei\b|beträgt\b|betrug\b|"
-            r"auf\b|von\b|at\b|is\b)\s*)?"
+            r"(?:[- ]?(?:Renditen?|Zins(?:en|satz)?|Yields?))?\s*"
+            r"(?:(?::|=|bei\b|liegt\s+bei\b|stabilisiert\s+sich\s+bei\b|"
+            r"beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
             r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*(?:%|Prozent)(?!\w)"
         )
         _treasury_observation_has_complete_provenance = None
@@ -21477,6 +21483,7 @@ def speichere_ergebnis(text, eingabedateien=None):
         # M-07: Jede 10Y-Treasury-Beobachtung erhält getrennte Provenienz aus
         # der tatsächlich geladenen Makroquelle. Fehlende Metadaten bleiben
         # ausdrücklich NICHT VERFÜGBAR und blockieren die Freigabe.
+        makro_text = ""
         try:
             makro_path = next((
                 path for label, path in (eingabedateien or {}).items()
@@ -21596,6 +21603,28 @@ def speichere_ergebnis(text, eingabedateien=None):
             validation_errors.append(
                 f"Kandidateninventar nicht finalisierbar: {type(candidate_exc).__name__}: {candidate_exc}"
             )
+        # The thesis JSON is rendered into compact human-readable evidence below.
+        # That is a text-changing operation and can reintroduce US-10Y values
+        # after an earlier provenance pass. Compress first, then run the final
+        # source-bound repair and the authoritative report gate on the exact
+        # text that will be persisted.
+        text = _trading_radar_lesefassung_komprimieren(text)
+        try:
+            treasury_before_final_pass = text
+            text = _trading_radar_treasury_provenienz_ergänzen(
+                text, makro_text, eingabedateien
+            )
+            text = _trading_radar_unprovenanzierte_thesen_treasury_werte_sperren(text)
+            print(
+                "TRADING_RADAR_US10Y_FINAL_RECHECK="
+                + ("REPAIRED" if text != treasury_before_final_pass else "UNCHANGED")
+            )
+        except Exception as treasury_exc:
+            validation_errors.append(
+                f"Treasury-Provenienz nach Berichtskomprimierung nicht prüfbar: "
+                f"{type(treasury_exc).__name__}: {treasury_exc}"
+            )
+
         report_gate_input = text.rstrip() + "\nTRADING_RADAR_FACHLICH_FINAL=FINAL\n"
         try:
             report_gate_findings = validate_trading_radar_report(report_gate_input)
@@ -21627,7 +21656,6 @@ def speichere_ergebnis(text, eingabedateien=None):
         final_status = "FINAL"
         if validation_errors or str(closed_block or "").startswith("TAB-2-QUELLE NICHT VERIFIZIERBAR"):
             final_status = "NICHT_FINAL"
-        text = _trading_radar_lesefassung_komprimieren(text)
         text = re.sub(r"(?m)^TRADING_RADAR_FACHLICH_FINAL=(?:FINAL|NICHT_FINAL)\s*$", "", text).rstrip()
         text += f"\nTRADING_RADAR_FACHLICH_FINAL={final_status}\n"
         temp_output = None

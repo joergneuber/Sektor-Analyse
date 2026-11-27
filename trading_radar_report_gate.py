@@ -574,7 +574,12 @@ _US10Y_RESOLVER_LABEL_RE = re.compile(
     r"(?i)(?:\(\s*10Y\s*\)\s*[- ]?\s*Treasury|10Y\s*\)\s*[- ]?\s*Rendite)"
 )
 _US10Y_VALUE_AFTER_LABEL_RE = re.compile(
-    r"(?i)^\s*(?:\([^)]*\)\s*)?(?:(?::|=|bei\b|liegt\s+bei\b|beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
+    r"(?i)^\s*(?:\([^)]*\)\s*)?"
+    # Gemini also writes the instrument descriptor between the label and value,
+    # e.g. "US 10Y Treasury Rendite bei 4.91%" or "Treasury-Zins stabilisiert sich bei 4.91%".
+    r"(?:[- ]?(?:Renditen?|Zins(?:en|satz)?|Yields?))?\s*"
+    r"(?:(?::|=|bei\b|liegt\s+bei\b|stabilisiert\s+sich\s+bei\b|"
+    r"beträgt\b|betrug\b|auf\b|von\b|at\b|is\b)\s*)?"
     r"(?P<value>[+-]?\d+(?:[,.]\d+)?)\s*(?:%|Prozent)(?!\w)"
 )
 _FOREIGN_10Y_LABEL_RE = re.compile(
