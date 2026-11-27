@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -615,6 +616,29 @@ def _verify_master_open_tab(sheets, spreadsheet_id: str, expected_open: pd.DataF
         raise RuntimeError("LIVE-VERIFIKATION FEHLER: offener Positions-Tab enthält einen nicht offenen Status.")
 
 
+
+def _run_local_with_staged_output(input_file: str):
+    """Run local calculations without exposing them as the consumer CSV."""
+    target = opc.OUTPUT_CSV
+    output_dir = os.path.dirname(os.path.abspath(target))
+    prefix = f".{os.path.basename(target)}.recovery-calculation."
+    stage_fd, stage_path = tempfile.mkstemp(
+        prefix=prefix, suffix=".tmp", dir=output_dir
+    )
+    os.close(stage_fd)
+    try:
+        return opc.run_local(input_file, stage_path)
+    finally:
+        if os.path.exists(stage_path):
+            try:
+                os.remove(stage_path)
+            except OSError as cleanup_exc:
+                print(
+                    "WARNUNG: Recovery-Berechnungs-Stagingdatei konnte nicht "
+                    f"entfernt werden: {stage_path} | {cleanup_exc}"
+                )
+
+
 def main() -> None:
     manifest = load_recovery_manifest()
     open_config = manifest["open_positions"]
@@ -649,7 +673,7 @@ def main() -> None:
         raise RuntimeError("Sicherheitsabbruch: Laufzeitquelle weicht vom Recovery-Manifest ab.")
 
     # Lokale technische Check-Ausgabe: bis hierhin keinerlei Drive-Schreibzugriff.
-    output, combined_history = opc.run_local(opc.INPUT_FILE, opc.OUTPUT_CSV)
+    output, combined_history = _run_local_with_staged_output(opc.INPUT_FILE)
     if len(output) != expected_open_count:
         raise RuntimeError(
             f"Sicherheitsabbruch: Check-Ausgabe enthält {len(output)} statt "
