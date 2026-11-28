@@ -1001,7 +1001,13 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
             "Markt-Snapshot nicht erstellt: gemeinsamer abgeschlossener VIX/DXY-Stichtag "
             "ist nicht verifizierbar."
         ]
-    session_cutoff = min(session_cutoff, common_risk_session)
+    # Keep the exchange-session cutoff and the common VIX/DXY risk cutoff
+    # independent. NYSE indices, sector breadth and the relative-strength
+    # matrix may use the completed XNYS close as soon as its publication buffer
+    # expires. VIX/DXY remain tied to their later common Cboe/ICE daily close.
+    # Collapsing both dates to the earlier one silently discards a valid NYSE
+    # session (especially at 16:15 ET and on early-close sessions).
+    risk_session_cutoff = common_risk_session
     if fetcher is None:
         try:
             import yfinance as yf
@@ -1054,10 +1060,13 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
         except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
             return None
 
-    def latest(symbol, *, require_session=False):
+    def latest(symbol, *, require_session=False, cutoff=None):
         values = series_for(symbol)
-        if require_session and (
-            values is None or values.empty or values.index[-1].date() != session_cutoff
+        expected_date = cutoff if cutoff is not None else (
+            session_cutoff if require_session else None
+        )
+        if expected_date is not None and (
+            values is None or values.empty or values.index[-1].date() != expected_date
         ):
             return None
         try:
@@ -1093,7 +1102,9 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
             f"- Index {label} ({symbol}): letzter Schluss {close:.2f}; 1M {fmt(r1, '%')}; 3M {fmt(r3, '%')}."
             if close is not None else f"- Index {label} ({symbol}): NICHT VERFÜGBAR."
         )
-    vix, dxy, tnx_raw, tlt = latest("^VIX"), latest("DX-Y.NYB"), latest("^TNX"), pct("TLT", 21)
+    vix = latest("^VIX", cutoff=risk_session_cutoff)
+    dxy = latest("DX-Y.NYB", cutoff=risk_session_cutoff)
+    tnx_raw, tlt = latest("^TNX"), pct("TLT", 21)
     tnx = (tnx_raw / 10.0 if abs(tnx_raw) >= 10.0 else tnx_raw) if tnx_raw is not None else None
     tnx_series = series_for("^TNX")
     tnx_observation_date = (
@@ -1440,11 +1451,13 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
     # completed NYSE session; missing/stale rows remain explicit data gaps.
     common_cutoff = pd.Timestamp(session_cutoff) if session_cutoff is not None else None
 
-    def close_at_common_cutoff(symbol):
+    risk_cutoff = pd.Timestamp(risk_session_cutoff)
+
+    def close_at_risk_cutoff(symbol):
         series = all_series.get(symbol)
-        if series is None or common_cutoff is None:
+        if series is None or risk_cutoff is None:
             return None
-        eligible = series.loc[series.index.date == common_cutoff.date()]
+        eligible = series.loc[series.index.date == risk_cutoff.date()]
         if eligible.empty:
             return None
         try:
@@ -1452,14 +1465,15 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
         except (TypeError, ValueError):
             return None
 
-    # VIX and the dollar proxy must be observed on the core market date. Prefer
-    # spot DXY, then ICE USDX futures, then the UUP dollar ETF. The fallback is
+    # VIX and the dollar proxy must be observed on their common completed
+    # Cboe/ICE risk date, which can lag the completed XNYS session. Prefer spot
+    # DXY, then ICE USDX futures, then the UUP dollar ETF. The fallback is
     # named explicitly; a fund price is never relabelled as the DXY index.
-    vix = close_at_common_cutoff("^VIX")
+    vix = close_at_risk_cutoff("^VIX")
     dxy = None
     dxy_source_symbol = None
     for candidate in ("DX-Y.NYB", "DX=F", "UUP"):
-        candidate_value = close_at_common_cutoff(candidate)
+        candidate_value = close_at_risk_cutoff(candidate)
         if candidate_value is not None:
             dxy = candidate_value
             dxy_source_symbol = candidate
@@ -1472,26 +1486,27 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
     dxy_descriptor, dxy_unit = dxy_descriptors.get(
         dxy_source_symbol, ("Dollarproxy", "NICHT VERFÜGBAR")
     )
-    cutoff_date = common_cutoff.date().isoformat() if common_cutoff is not None else "NICHT VERFÜGBAR"
+    risk_cutoff_date = risk_cutoff.date().isoformat()
     for index, line in enumerate(lines):
         if line.startswith("- Volatilität VIX:"):
             lines[index] = (
                 f"- Volatilität VIX: {vix:.2f} | Quelle: Yahoo Finance (^VIX); Abrufzeit: {now}; "
-                f"Datenstichtag: {cutoff_date}; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs."
+                f"Datenstichtag: {risk_cutoff_date}; Einheit: Indexpunkte; Verzögerung: Tages-Schlusskurs."
                 if vix is not None else "- Volatilität VIX: NICHT VERFÜGBAR (kein Kurs exakt am gemeinsamen Datenstichtag)."
             )
         elif line.startswith("- Dollar-Proxy"):
             lines[index] = (
                 f"- Dollar-Proxy {dxy_descriptor}: {dxy:.2f} | Quelle: Yahoo Finance ({dxy_source_symbol}); "
-                f"Abrufzeit: {now}; Datenstichtag: {cutoff_date}; Einheit: {dxy_unit}; "
+                f"Abrufzeit: {now}; Datenstichtag: {risk_cutoff_date}; Einheit: {dxy_unit}; "
                 "Verzögerung: Tages-Schlusskurs."
                 if dxy is not None and dxy_source_symbol is not None
                 else "- Dollar-Proxy: NICHT VERFÜGBAR (keine bestätigte Beobachtung am gemeinsamen Datenstichtag)."
             )
-    # M-02 consumes the same real market-data cutoff as the relative-strength
-    # matrix. Retrieval time is not substituted for an observation date.
-    if common_cutoff is not None:
-        cutoff_date = common_cutoff.date().isoformat()
+    # M-02's regime label is specifically anchored to the common completed
+    # VIX/DXY observation date. The relative-strength matrix and sector breadth
+    # retain their independent XNYS session cutoff.
+    if risk_cutoff is not None:
+        cutoff_date = risk_cutoff.date().isoformat()
         report_text = re.sub(
             r"(?im)^\s*Marktregime-Datenstichtag\s*:[^\r\n]*\n?", "", report_text
         )
@@ -1537,8 +1552,7 @@ def append_live_market_snapshot(report_text: str, *, fetcher=None, as_of_time=No
             else f"Dollarproxy: NICHT VERFÜGBAR"
         )
         facts.append(
-            "gemeinsamer Datenstichtag: "
-            + (common_cutoff.date().isoformat() if common_cutoff is not None else "NICHT VERFÜGBAR")
+            "gemeinsamer Datenstichtag: " + risk_cutoff_date
         )
         joined = "; ".join(part for part in (context, "; ".join(facts)) if part)
         return match.group(1) + joined.rstrip(" .;") + "."
