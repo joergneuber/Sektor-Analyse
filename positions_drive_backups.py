@@ -244,21 +244,39 @@ def cleanup_expired_drive_backups(
 
     trashed: list[str] = []
     skipped: list[str] = []
+    skipped_reason_counts: dict[str, int] = {}
+
+    def skip(file_id: str, reason: str) -> None:
+        skipped.append(file_id or "<unknown>")
+        skipped_reason_counts[reason] = skipped_reason_counts.get(reason, 0) + 1
+
     for candidate in candidates:
         file_id = str(candidate.get("id") or "")
         name = str(candidate.get("name") or "")
         props = candidate.get("appProperties") or {}
         created = _parse_utc(props.get(BACKUP_CREATED_KEY))
-        if (
-            not file_id
-            or not name.startswith(BACKUP_PREFIX)
-            or str(folder_id) not in {str(parent) for parent in candidate.get("parents", [])}
-            or props.get(BACKUP_PURPOSE_KEY) != BACKUP_PURPOSE_VALUE
-            or candidate.get("mimeType") not in BACKUP_ALLOWED_MIME_TYPES
-            or created is None
-            or created > cutoff
-        ):
-            skipped.append(file_id or name or "<unknown>")
+        # Record one deterministic, non-sensitive reason per skipped file.
+        # IDs and filenames stay in the private in-memory result only.
+        if not file_id:
+            skip("", "MISSING_FILE_ID")
+            continue
+        if not name.startswith(BACKUP_PREFIX):
+            skip(file_id, "NAME_PREFIX_MISMATCH")
+            continue
+        if str(folder_id) not in {str(parent) for parent in candidate.get("parents", [])}:
+            skip(file_id, "WRONG_PARENT_FOLDER")
+            continue
+        if props.get(BACKUP_PURPOSE_KEY) != BACKUP_PURPOSE_VALUE:
+            skip(file_id, "BACKUP_MARKER_MISMATCH")
+            continue
+        if candidate.get("mimeType") not in BACKUP_ALLOWED_MIME_TYPES:
+            skip(file_id, "MIME_TYPE_NOT_ALLOWED")
+            continue
+        if created is None:
+            skip(file_id, "BACKUP_TIMESTAMP_INVALID")
+            continue
+        if created > cutoff:
+            skip(file_id, "RETENTION_NOT_EXPIRED")
             continue
 
         # Re-read the exact candidate to avoid moving a file that was moved,
@@ -269,22 +287,32 @@ def cleanup_expired_drive_backups(
         ).execute()
         latest_props = latest.get("appProperties") or {}
         latest_created = _parse_utc(latest_props.get(BACKUP_CREATED_KEY))
-        if (
-            latest.get("trashed")
-            or latest.get("name") != name
-            or str(folder_id) not in {str(parent) for parent in latest.get("parents", [])}
-            or latest_props.get(BACKUP_PURPOSE_KEY) != BACKUP_PURPOSE_VALUE
-            or latest.get("mimeType") not in BACKUP_ALLOWED_MIME_TYPES
-            or latest.get("mimeType") != candidate.get("mimeType")
-            or latest_created is None
-            or latest_created > cutoff
-            or latest_created != created
-            or any(
-                latest.get(field) != candidate.get(field)
-                for field in ("version", "modifiedTime", "headRevisionId", "md5Checksum")
-            )
+        if latest.get("trashed"):
+            skip(file_id, "ALREADY_TRASHED_ON_RECHECK")
+            continue
+        if latest.get("name") != name:
+            skip(file_id, "NAME_CHANGED_SINCE_LIST")
+            continue
+        if str(folder_id) not in {str(parent) for parent in latest.get("parents", [])}:
+            skip(file_id, "PARENT_CHANGED_SINCE_LIST")
+            continue
+        if latest_props.get(BACKUP_PURPOSE_KEY) != BACKUP_PURPOSE_VALUE:
+            skip(file_id, "BACKUP_MARKER_CHANGED_SINCE_LIST")
+            continue
+        if latest.get("mimeType") not in BACKUP_ALLOWED_MIME_TYPES or latest.get("mimeType") != candidate.get("mimeType"):
+            skip(file_id, "MIME_TYPE_CHANGED_OR_NOT_ALLOWED")
+            continue
+        if latest_created is None:
+            skip(file_id, "BACKUP_TIMESTAMP_INVALID_ON_RECHECK")
+            continue
+        if latest_created > cutoff or latest_created != created:
+            skip(file_id, "BACKUP_TIMESTAMP_CHANGED_OR_NOT_EXPIRED")
+            continue
+        if any(
+            latest.get(field) != candidate.get(field)
+            for field in ("version", "modifiedTime", "headRevisionId", "md5Checksum")
         ):
-            skipped.append(file_id)
+            skip(file_id, "FILE_REVISION_CHANGED_SINCE_LIST")
             continue
 
         if _trash_and_verify(drive, file_id):
@@ -295,5 +323,6 @@ def cleanup_expired_drive_backups(
         "cutoff_utc": cutoff.isoformat(timespec="seconds").replace("+00:00", "Z"),
         "trashed_ids": trashed,
         "skipped_ids": skipped,
+        "skipped_reason_counts": dict(sorted(skipped_reason_counts.items())),
         "candidate_count": len(candidates),
     }
