@@ -250,6 +250,43 @@ def test_nyse_close_buffer_boundary_16_14_excludes_current_session():
     assert f"Stichtag {current.date().isoformat()}" not in result
 
 
+def test_nyse_breadth_and_vix_dxy_keep_independent_completed_cutoffs():
+    data, prior_last, current = _data_with_current_session("2026-06-05")
+    report = (
+        "1. Trading-Radar\n"
+        "Marktregime: neutral.\n"
+        "Dollar/Liquidität/Volatilität: bestehender Text.\n"
+        "Indizes/Marktbreite: vorhanden.\n"
+        "2. Thesen-Update\n"
+    )
+    result, findings = append_live_market_snapshot(
+        report,
+        fetcher=lambda _: data,
+        as_of_time=pd.Timestamp("2026-06-05 16:15", tz="America/New_York"),
+    )
+
+    assert findings == []
+    # XNYS has completed its close plus the 15-minute publication buffer.
+    assert (
+        f"gemeinsamer abgeschlossener Datenstichtag {current.date().isoformat()}"
+        in result
+    )
+    # VIX/DXY use their own later common close boundary; at 16:15 ET the
+    # current DXY daily bar is not complete, so both risk observations stay
+    # anchored to the prior common session.
+    assert f"Volatilität VIX:" in result
+    assert f"Datenstichtag: {prior_last.date().isoformat()}" in next(
+        line for line in result.splitlines() if line.startswith("- Volatilität VIX:")
+    )
+    assert f"Datenstichtag: {prior_last.date().isoformat()}" in next(
+        line for line in result.splitlines() if line.startswith("- Dollar-Proxy")
+    )
+    assert (
+        f"Marktregime-Datenstichtag: {prior_last.date().isoformat()}"
+        in result
+    )
+
+
 def test_nyse_close_buffer_boundary_16_15_includes_current_session():
     data, prior_last, current = _data_with_current_session("2026-06-05")
     result, findings = append_live_market_snapshot(

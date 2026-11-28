@@ -300,9 +300,14 @@ class TradingRadarFailureContractTests(unittest.TestCase):
     def test_workflow_records_not_run_gates_and_nicht_final_after_gemini_failure(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(workflow.count("|| 'NOT_RUN'"), 6)
+        # The report-check step is authoritative: its output is the status
+        # actually validated against the generated report. It is used by both
+        # evidence gates, the audit artifact name and the report mail decision.
         self.assertEqual(
-            workflow.count("|| steps.trading-radar.outputs.fachlich_final || 'NICHT_FINAL'"),
-            2,
+            workflow.count(
+                "steps.trading-radar-report-check.outputs.TRADING_RADAR_FACHLICH_FINAL || 'NICHT_FINAL'"
+            ),
+            4,
         )
 
     def test_standalone_radar_switches_model_after_transient_429_and_timeout(self):

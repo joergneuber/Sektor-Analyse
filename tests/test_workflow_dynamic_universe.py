@@ -383,9 +383,35 @@ def test_restore_shell_fails_closed_on_release_api_and_bundle_download_errors():
 def test_final_open_position_verification_remains_after_technical_fallback():
     text = MAIN_WORKFLOW.read_text(encoding="utf-8")
     technical = text.index("run: python offene_positionen_check.py")
-    verify = text.index("run: python historical_ohlcv.py verify-open-positions --positions-file Offene_Positionen.csv")
+    verify_step = text.index(
+        "- name: Offene OHLCV-Historien abschliessend qualitaetspruefen"
+    )
     benchmark = text.index("run: python performance_benchmark.py")
-    assert technical < verify < benchmark
+    verify_block = text[verify_step:benchmark]
+
+    # The verification is intentionally a guarded multi-line shell block:
+    # retries are limited to explicit missing/stale-session evidence and the
+    # final verification exit code remains authoritative.
+    assert "run: |" in verify_block
+    assert (
+        "python historical_ohlcv.py verify-open-positions "
+        "--positions-file Offene_Positionen.csv"
+    ) in verify_block
+    assert 'grep -Eq \'STALE_HISTORY:|NO_STORED_BARS\'' in verify_block
+    assert 'exit "$positions_rc"' in verify_block
+    assert technical < verify_step < benchmark
+
+    # A second verification still runs after the scanner phase in the final
+    # synchronization block; do not accidentally remove that later checkpoint.
+    final_sync = text.index(
+        "- name: Finale OHLCV-Synchronisierung, Coverage und Positionsprüfung"
+    )
+    final_sync_end = text.find("\n      - name:", final_sync + 1)
+    assert final_sync_end > final_sync
+    assert (
+        "python historical_ohlcv.py verify-open-positions "
+        "--positions-file Offene_Positionen.csv"
+    ) in text[final_sync:final_sync_end]
 
 
 def test_ci_runs_existing_ohlcv_and_new_bundle_regressions():
