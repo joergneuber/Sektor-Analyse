@@ -702,3 +702,131 @@ def test_migration_repairs_six_cells_only_after_verified_backup(monkeypatch):
     assert final_plan.repair_keys == []
     assert final_plan.ratio_keys == []
     assert len(final_plan.canonical_keys) == 51
+
+
+def test_closed_trade_without_live_price_or_stored_performance_is_archived_from_exit_facts():
+    row = {
+        "Ticker": "1ANT.F",
+        "Name": "Anthropic PBC",
+        "Status": "Verkauft",
+        "Richtung": "Long",
+        "Einstiegsdatum": "01.10.2026",
+        "Einstieg": "75,75",
+        "Aktueller_Kurs": "",
+        "Ausstiegsdatum": "19.11.2026",
+        "Ausstiegskurs": "88,38",
+        "Performance_Seit_Einstieg%": "",
+    }
+    assert opc.canonical_closed_performance_points(row) == 16.67
+
+    closed = pd.DataFrame([row], columns=opc.HISTORY_HEADERS)
+    prepared = opc._prepare_closed_history_for_archive(closed)
+    assert prepared.iloc[0]["Performance_Seit_Einstieg%"] == 16.67
+    assert prepared.iloc[0]["Aktueller_Kurs"] == ""
+
+
+def test_closed_short_trade_without_live_price_uses_direction_correctly():
+    row = {
+        "Ticker": "SHORT.TEST",
+        "Name": "Short Test",
+        "Status": "Verkauft",
+        "Richtung": "Short",
+        "Einstiegsdatum": "01.10.2026",
+        "Einstieg": "100",
+        "Aktueller_Kurs": "",
+        "Ausstiegsdatum": "19.11.2026",
+        "Ausstiegskurs": "90",
+        "Performance_Seit_Einstieg%": "",
+    }
+    assert opc.canonical_closed_performance_points(row) == 10.0
+
+
+def test_incomplete_exit_date_fails_before_google_services_are_created(monkeypatch):
+    row = {
+        "Ticker": "1ANT.F",
+        "Name": "Anthropic PBC",
+        "Status": "Verkauft",
+        "Richtung": "Long",
+        "Einstiegsdatum": "01.10.2026",
+        "Einstieg": "75.75",
+        "Aktueller_Kurs": "",
+        "Ausstiegsdatum": "",
+        "Ausstiegskurs": "88.38",
+        "Performance_Seit_Einstieg%": "",
+    }
+    closed = pd.DataFrame([row], columns=opc.HISTORY_HEADERS)
+    opened = pd.DataFrame([{"Ticker": "OPEN.TEST", "Status": "Offen"}])
+
+    def forbidden_build(*args, **kwargs):
+        pytest.fail("Drive-/Sheets-Service darf vor lokaler Exit-Validierung nicht erstellt werden.")
+
+    monkeypatch.setattr(opc, "build", forbidden_build, raising=False)
+    with pytest.raises(RuntimeError, match=r"1ANT\.F – Ausstiegsdatum fehlt"):
+        opc.upsert_google_sheet(opened, closed, creds=object())
+
+
+def test_invalid_stored_closed_performance_is_still_rejected():
+    row = {
+        "Ticker": "1ANT.F",
+        "Name": "Anthropic PBC",
+        "Status": "Verkauft",
+        "Richtung": "Long",
+        "Einstiegsdatum": "01.10.2026",
+        "Einstieg": "75.75",
+        "Aktueller_Kurs": "",
+        "Ausstiegsdatum": "19.11.2026",
+        "Ausstiegskurs": "88.38",
+        "Performance_Seit_Einstieg%": "99.00",
+    }
+    with pytest.raises(RuntimeError, match=r"1ANT\.F"):
+        opc._prepare_closed_history_for_archive(
+            pd.DataFrame([row], columns=opc.HISTORY_HEADERS)
+        )
+
+
+def test_expected_archive_preflight_runs_before_first_google_sheet_write():
+    source = (__import__("pathlib").Path(opc.__file__).read_text(encoding="utf-8"))
+    start = source.index("def upsert_google_sheet")
+    end = source.index("def _remove_closed_from_source", start)
+    active = source[start:end]
+    assert active.index("_expected_history_records(") < active.index(".batchUpdate(")
+    assert active.index("_validate_output_before_upload(") < active.index('build("drive"')
+
+
+def test_zero_percent_closed_trade_accepts_stored_zero():
+    row = {
+        "Einstieg": "100",
+        "Ausstiegskurs": "100",
+        "Richtung": "Long",
+        "Performance_Seit_Einstieg%": "0",
+    }
+    assert opc.canonical_closed_performance_points(row) == 0.0
+
+
+def test_non_finite_positive_price_string_is_rejected():
+    row = {
+        "Einstieg": "inf",
+        "Ausstiegskurs": "100",
+        "Richtung": "Long",
+        "Performance_Seit_Einstieg%": "",
+    }
+    with pytest.raises(RuntimeError, match="gültige endliche positive"):
+        opc.canonical_closed_performance_points(row)
+
+
+def test_closed_history_rejects_exit_before_entry():
+    row = {
+        "Ticker": "DATE.TEST",
+        "Name": "Date Test",
+        "Status": "Verkauft",
+        "Richtung": "Long",
+        "Einstiegsdatum": "20.11.2026",
+        "Einstieg": "100",
+        "Aktueller_Kurs": "",
+        "Ausstiegsdatum": "19.11.2026",
+        "Ausstiegskurs": "110",
+        "Performance_Seit_Einstieg%": "",
+    }
+    closed = pd.DataFrame([row], columns=opc.HISTORY_HEADERS)
+    with pytest.raises(RuntimeError, match="Ausstiegsdatum liegt vor dem Einstiegsdatum"):
+        opc._prepare_closed_history_for_archive(closed)
