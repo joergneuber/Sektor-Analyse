@@ -72,6 +72,11 @@ def _public_summary(result: dict) -> dict:
         "candidate_count": int(result["candidate_count"]),
         "moved_to_trash_count": len(result["trashed_ids"]),
         "skipped_count": len(result["skipped_ids"]),
+        # Reason codes are aggregate-only: no Drive IDs or filenames are exposed.
+        "skipped_reason_counts": {
+            str(reason): int(count)
+            for reason, count in sorted((result.get("skipped_reason_counts") or {}).items())
+        },
     }
 
 
@@ -111,6 +116,7 @@ def main() -> int:
             "DRIVE-BACKUP-RETENTION abgeschlossen | "
             f"in Papierkorb verschoben={summary['moved_to_trash_count']} | "
             f"übersprungen={summary['skipped_count']} | "
+            f"Skip-Gründe={json.dumps(summary['skipped_reason_counts'], ensure_ascii=False, sort_keys=True)} | "
             f"Aufbewahrung={summary['retention_days']} Tage | endgültig gelöscht=0"
         )
         return 0
