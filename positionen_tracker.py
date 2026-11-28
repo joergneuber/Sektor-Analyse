@@ -56,6 +56,18 @@ TWELVEDATA_BASE_URL = 'https://api.twelvedata.com'
 def _ist_gold_spot_ticker(ticker):
     """Erkennt XAU/USD und die gebräuchliche Eingabevariante XAUUSD."""
     return str(ticker or '').strip().upper() in GOLD_SPOT_TICKER_ALIASES
+
+
+# Verlässliche Stammdaten-Aliase für Ticker, deren Yahoo-Symbolname kein
+# brauchbarer Unternehmensname ist oder deren yfinance-Auflösung ausfällt.
+TICKER_NAME_ALIASES = {
+    '1ANT.F': 'Anthropic PBC',
+}
+
+
+def _bekannter_ticker_name(ticker):
+    """Liefert einen explizit gepflegten Unternehmensnamen für bekannte Aliase."""
+    return TICKER_NAME_ALIASES.get(str(ticker or '').strip().upper())
 ANLEITUNG_TICKER = 'ANLEITUNG'  # Sentinel-Wert: Zeilen mit diesem Ticker werden
                                  # nie als echte Position verarbeitet, dienen nur
                                  # als sichtbarer Hinweistext im Sheet selbst
@@ -592,7 +604,12 @@ def vervollstaendige_stammdaten(df):
             df.at[idx, 'Ticker'] = GOLD_SPOT_TICKER
         markt_leer = str(row['Markt']).strip() in ("", "nan")
         waehrung_leer = str(row['Waehrung']).strip() in ("", "nan")
-        name_leer = str(row['Name']).strip() in ("", "nan")
+        name_roh = str(row['Name']).strip()
+        name_leer = name_roh in ("", "nan")
+        # Ein unveränderter Ticker in der Namensspalte ist kein aufgelöster
+        # Unternehmensname, sondern ein Platzhalter aus einem früheren Fallback.
+        name_ist_ticker = bool(name_roh) and name_roh.upper() == ticker_upper
+        name_aufloesen = name_leer or name_ist_ticker
         sektor_leer = str(row.get('Sektor', '')).strip() in ("", "nan")
 
         if ticker_upper == GOLD_FUTURES_TICKER:
@@ -616,12 +633,16 @@ def vervollstaendige_stammdaten(df):
                     df.at[idx, 'Waehrung'] = 'GBP' if ticker_upper.endswith('.L') else 'EUR'
                 else:
                     df.at[idx, 'Waehrung'] = 'USD'
-        if (name_leer or sektor_leer) and ticker_upper != GOLD_FUTURES_TICKER and not _ist_gold_spot_ticker(ticker_upper):
+        bekannter_name = _bekannter_ticker_name(ticker_upper)
+        if name_aufloesen and bekannter_name:
+            df.at[idx, 'Name'] = bekannter_name
+
+        if ((name_aufloesen and not bekannter_name) or sektor_leer) and ticker_upper != GOLD_FUTURES_TICKER and not _ist_gold_spot_ticker(ticker_upper):
             try:
                 info = yf.Ticker(ticker).info
             except Exception:
                 info = {}
-            if name_leer:
+            if name_aufloesen and not bekannter_name:
                 df.at[idx, 'Name'] = info.get('longName') or ticker
             if sektor_leer:
                 sektor = info.get('sector')
@@ -703,14 +724,18 @@ def ergaenze_neue_zeilen(df):
                 markt = 'US'
                 waehrung = 'USD'
 
-            try:
-                info = yf.Ticker(ticker).info
-                name = info.get('longName', ticker)
-                if not name:
+            bekannter_name = _bekannter_ticker_name(ticker_upper)
+            if bekannter_name:
+                # Ein gepflegter Alias ist bereits die autoritative Stammdatenquelle;
+                # dafür ist kein zusätzlicher Yahoo-Aufruf erforderlich.
+                name = bekannter_name
+            else:
+                try:
+                    info = yf.Ticker(ticker).info
+                    name = info.get('longName') or ticker
+                except Exception as e:
+                    print(f"DEBUG: Firmenname für {ticker} konnte nicht ermittelt werden ({e}) - nutze Ticker als Name.")
                     name = ticker
-            except Exception as e:
-                print(f"DEBUG: Firmenname für {ticker} konnte nicht ermittelt werden ({e}) - nutze Ticker als Name.")
-                name = ticker
 
         einstieg = sicheres_float(row['Einstieg'], ticker, 'Einstieg')
         stop = sicheres_float(row['Stop'], ticker, 'Stop')
@@ -1924,13 +1949,13 @@ def aktualisiere_positionen(df):
                 aktueller_hinweis = ''
             tp1_wurde_erreicht = 'erreicht' in aktueller_hinweis
             tp2_wurde_erreicht = 'TP2 erreicht' in aktueller_hinweis
-    
+
             ziel_stop, ziel_label = None, None
             if tp2_wurde_erreicht and tp1 is not None and tp1 > 0 and 'Stop auf TP1' not in aktueller_hinweis:
                 ziel_stop, ziel_label = round(tp1, 2), "TP1"
             elif tp1_wurde_erreicht and 'Breakeven' not in aktueller_hinweis:
                 ziel_stop, ziel_label = round(einstieg, 2), "Breakeven"
-    
+
             if ziel_stop is not None and stop > 0:
                 nachziehen = (stop > ziel_stop) if ist_short else (stop < ziel_stop)
                 if nachziehen:

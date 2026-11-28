@@ -1595,13 +1595,34 @@ def canonical_closed_performance_points(row) -> float:
     close = parse_number(row.get("Ausstiegskurs"))
     direction = str(row.get("Richtung", "")).strip().lower()
     stored = parse_number(row.get("Performance_Seit_Einstieg%"))
-    if entry is None or close is None or entry <= 0 or close <= 0:
-        raise RuntimeError("Sicherheitsabbruch: neue Historienzeile benötigt gültigen positiven Einstieg und Ausstiegskurs.")
+    if (
+        entry is None or close is None
+        or not math.isfinite(entry) or not math.isfinite(close)
+        or entry <= 0 or close <= 0
+    ):
+        raise RuntimeError(
+            "Sicherheitsabbruch: neue Historienzeile benötigt gültige endliche "
+            "positive Einstiegs- und Ausstiegskurse."
+        )
     if direction not in {"long", "short"}:
         raise RuntimeError("Sicherheitsabbruch: neue Historienzeile benötigt Richtung Long oder Short.")
+    raw_expected = performance(entry, close, direction)
+    if raw_expected is None or not math.isfinite(raw_expected):
+        raise RuntimeError(
+            "Sicherheitsabbruch: neu berechnete Performance ist nicht endlich."
+        )
+    expected = round(raw_expected, 2)
+    # Bei vollständigen, bestätigten Exit-Fakten ist die Performance direkt
+    # berechenbar. Ein Live-Kurs ist für einen geschlossenen Trade ausdrücklich
+    # nicht erforderlich. Ein fehlender gespeicherter Wert wird daher kanonisch
+    # aus Einstieg/Ausstieg/Richtung ergänzt; vorhandene Werte bleiben streng
+    # auf Einheit und rechnerische Übereinstimmung geprüft.
     if stored is None:
-        raise RuntimeError("Sicherheitsabbruch: neue Historienzeile besitzt keinen gültigen Performance-Wert.")
-    expected = round(performance(entry, close, direction), 2)
+        return expected
+    # Bei exakt 0 % sind Prozentverhältnis und Prozentpunkte numerisch identisch.
+    # Ein gespeicherter Nullwert ist deshalb nicht mehrdeutig, sondern korrekt.
+    if math.isfinite(stored) and round(float(stored), 2) == 0.0 and expected == 0.0:
+        return expected
     ratio_matches = round(float(stored) * 100.0, 2) == expected
     points_match = round(float(stored), 2) == expected
     if ratio_matches == points_match:
@@ -2235,12 +2256,89 @@ def _enforce_productive_tab_order(sheets, spreadsheet_id: str):
     print("PERSISTENZ: Tabellenreiter verifiziert | 1=Offene Positionen+Check | 2=Geschlossene Positionen")
 
 
+def _prepare_closed_history_for_archive(closed_df: pd.DataFrame) -> pd.DataFrame:
+    """Validiert und vervollständigt neue Abschlussdatensätze vor jedem Google-Schreibzugriff.
+
+    Die Performance wird ausschließlich aus Einstieg, tatsächlichem Ausstiegskurs
+    und Long-/Short-Richtung berechnet. Aktueller_Kurs ist für geschlossene Trades
+    weder Eingabe noch Voraussetzung. Fehlende/ungültige Exit-Fakten bleiben ein
+    harter Sicherheitsfehler; es werden keine Daten erfunden.
+    """
+    if closed_df is None or not isinstance(closed_df, pd.DataFrame):
+        raise RuntimeError("Historien-Ausgabe ist keine gültige Tabelle.")
+
+    prepared = closed_df.copy()
+    if prepared.empty:
+        return prepared
+
+    required = {
+        "Ticker", "Name", "Status", "Richtung", "Einstiegsdatum", "Einstieg",
+        "Ausstiegsdatum", "Ausstiegskurs", "Performance_Seit_Einstieg%",
+    }
+    missing_columns = sorted(required - set(prepared.columns))
+    if missing_columns:
+        raise RuntimeError(
+            "Sicherheitsabbruch: Historien-Ausgabe hat Pflichtspalten nicht: "
+            + ", ".join(missing_columns)
+        )
+
+    seen_keys = set()
+    for row_number, (index, source_row) in enumerate(prepared.iterrows(), start=1):
+        ticker = str(source_row.get("Ticker", "")).strip()
+        if not ticker or ticker.lower() in {"nan", "none", "nat"}:
+            raise RuntimeError(
+                f"Sicherheitsabbruch: Historienzeile {row_number} besitzt keinen gültigen Ticker."
+            )
+        status = str(source_row.get("Status", "")).strip().lower()
+        if status not in {"gestoppt", "verkauft"}:
+            raise RuntimeError(
+                f"Sicherheitsabbruch: {ticker} hat unzulässigen Historienstatus {status!r}."
+            )
+        name_value = str(source_row.get("Name", "")).strip()
+        if not name_value or name_value.lower() in {"nan", "none", "nat"}:
+            raise RuntimeError(
+                f"Sicherheitsabbruch: {ticker} besitzt keinen aufgelösten Namen."
+            )
+
+        date_serials = {}
+        for date_column in ("Einstiegsdatum", "Ausstiegsdatum"):
+            raw_date = source_row.get(date_column, "")
+            if raw_date is None or not str(raw_date).strip() or str(raw_date).strip().lower() in {"nan", "nat"}:
+                raise RuntimeError(
+                    f"Sicherheitsabbruch: {ticker} – {date_column} fehlt; "
+                    "die Position wird nicht archiviert."
+                )
+            try:
+                date_serials[date_column] = _date_to_sheets_serial(
+                    raw_date, date_column, row_number, strict=True
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(f"Sicherheitsabbruch: {ticker} – {exc}") from exc
+        if date_serials["Ausstiegsdatum"] < date_serials["Einstiegsdatum"]:
+            raise RuntimeError(
+                f"Sicherheitsabbruch: {ticker} – Ausstiegsdatum liegt vor dem Einstiegsdatum; "
+                "die Position wird nicht archiviert."
+            )
+
+        try:
+            performance_points = canonical_closed_performance_points(source_row)
+            key = _history_key(source_row)
+        except RuntimeError as exc:
+            raise RuntimeError(f"Sicherheitsabbruch: {ticker} – {exc}") from exc
+        if key in seen_keys:
+            raise RuntimeError(
+                f"Sicherheitsabbruch: doppelter Positionsschlüssel in Eingangsdaten: {key}"
+            )
+        seen_keys.add(key)
+        prepared.at[index, "Performance_Seit_Einstieg%"] = performance_points
+
+    return prepared
+
+
 def _validate_output_before_upload(df: pd.DataFrame, closed_df: pd.DataFrame):
     """Lokale Plausibilitätsprüfung als letzte Schranke vor Google-Änderungen."""
     if df is None or not isinstance(df, pd.DataFrame):
         raise RuntimeError("Offene Check-Ausgabe ist keine gültige Tabelle.")
-    if closed_df is None or not isinstance(closed_df, pd.DataFrame):
-        raise RuntimeError("Historien-Ausgabe ist keine gültige Tabelle.")
     if len(df) == 0:
         raise RuntimeError("Sicherheitsabbruch: 0 offene Positionen würden hochgeladen.")
     required_open = {"Ticker", "Status"}
@@ -2248,11 +2346,7 @@ def _validate_output_before_upload(df: pd.DataFrame, closed_df: pd.DataFrame):
         raise RuntimeError("Sicherheitsabbruch: offene Check-Ausgabe hat Pflichtspalten nicht.")
     if not (df["Status"].astype(str).str.strip().str.lower() == "offen").all():
         raise RuntimeError("Sicherheitsabbruch: Tab 1 enthält eine Position, die nicht 'Offen' ist.")
-    required_hist = {"Ticker", "Status"}
-    if not required_hist.issubset(closed_df.columns):
-        raise RuntimeError("Sicherheitsabbruch: Historien-Ausgabe hat Pflichtspalten nicht.")
-    if closed_df["Ticker"].astype(str).str.strip().eq("").any():
-        raise RuntimeError("Sicherheitsabbruch: Historie enthält einen leeren Ticker.")
+    return _prepare_closed_history_for_archive(closed_df)
 
 
 def _snapshot_google_sheet(drive, spreadsheet_id: str, sheets=None) -> Optional[str]:
@@ -3534,12 +3628,21 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
         print("INFO: Keine Google-Credentials – lokale CSVs bleiben die Ausgabe.")
         return None
 
-    _validate_output_before_upload(df, closed_df)
+    # Sämtliche Abschlussdaten einschließlich Performance und Datumswerte
+    # werden lokal geprüft, bevor Drive-/Sheets-Services aufgerufen werden.
+    validated_closed = _validate_output_before_upload(df, closed_df)
+    # Der Fallback erhält Kompatibilität zu bestehenden Test-Doubles/externen
+    # Aufrufern, die den Validator ohne Rückgabewert ersetzen; produktiv liefert
+    # der Validator immer den bereits normalisierten DataFrame.
+    closed_for_append = (
+        validated_closed if isinstance(validated_closed, pd.DataFrame)
+        else _prepare_closed_history_for_archive(closed_df)
+    )
 
     drive = build("drive", "v3", credentials=creds)
     sheets = build("sheets", "v4", credentials=creds)
     spreadsheet_id, is_new_master, init_name = _find_or_initialize_master(
-        drive, closed_df
+        drive, closed_for_append
     )
 
     existing = sheets.spreadsheets().get(
@@ -3581,6 +3684,11 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
                 f"({preflight_count} < {MINIMUM_PROTECTED_HISTORY_ROWS}); Google-Sheet bleibt unverändert."
             )
 
+    # Erwarteten vollständigen Archivbestand ebenfalls vor dem ersten
+    # Google-Schreibzugriff bilden. Dadurch können unvollständige Exit-Daten
+    # weder Locale noch Snapshot/Temporär-Tabs verändern.
+    expected_history_records = _expected_history_records(preflight_rows, closed_for_append)
+
     # Deutsches Locale + echte numerische Werte = stabile Anzeige ohne String-Parsing.
     sheets.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
@@ -3591,8 +3699,6 @@ def upsert_google_sheet(df: pd.DataFrame, closed_df: pd.DataFrame, creds) -> Opt
 
     # Verbindliche Abschlussquelle: ausschließlich aktuell Gestoppt/Verkauft in der Masterquelle.
     # Ein bloßes Verschwinden aus Tab 1 ist niemals ein Abschlussereignis.
-    closed_for_append = closed_df.copy()
-    expected_history_records = _expected_history_records(preflight_rows, closed_for_append)
 
     old_main_title = None
     if "Offene Positionen+Check" not in existing_titles and existing:
