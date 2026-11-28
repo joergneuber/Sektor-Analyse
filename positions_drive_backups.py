@@ -164,6 +164,47 @@ def archive_drive_backup(
     return updated
 
 
+def _trash_and_verify(drive: Any, file_id: str) -> bool:
+    """Move one file to Google Drive trash and verify the persisted state.
+
+    Never call ``files.delete``: Drive's ``files.update`` with ``trashed=True``
+    is reversible during Google's trash-retention window. If the update
+    response is lost, reconcile the exact file before deciding whether it
+    succeeded.
+    """
+    files = drive.files()
+    try:
+        files.update(
+            fileId=file_id,
+            body={"trashed": True},
+            fields="id,trashed",
+        ).execute()
+    except Exception:
+        # The server may have applied the update even though the response was
+        # lost. Treat only a confirmed remote trash state as success.
+        latest = files.get(fileId=file_id, fields="id,trashed").execute()
+        if (
+            isinstance(latest, dict)
+            and str(latest.get("id")) == str(file_id)
+            and latest.get("trashed") is True
+        ):
+            return True
+        raise
+
+    # A successful HTTP response alone is not sufficient evidence that the
+    # requested state persisted; the follow-up read is authoritative.
+    latest = files.get(fileId=file_id, fields="id,trashed").execute()
+    if not (
+        isinstance(latest, dict)
+        and str(latest.get("id")) == str(file_id)
+        and latest.get("trashed") is True
+    ):
+        raise RuntimeError(
+            f"Drive-Backup {file_id} konnte nicht sicher in den Papierkorb verschoben werden."
+        )
+    return True
+
+
 def cleanup_expired_drive_backups(
     drive: Any,
     folder_id: str,
@@ -171,15 +212,16 @@ def cleanup_expired_drive_backups(
     now: dt.datetime | None = None,
     retention_days: int = BACKUP_RETENTION_DAYS,
 ) -> dict:
-    """Delete only application-marked backups older than the retention period.
+    """Move only application-marked backups older than the retention period to trash.
 
-    The candidate is fetched again immediately before deletion. Any missing,
-    changed, unmarked, or malformed candidate is skipped. API failures raise;
-    callers must treat cleanup as best-effort and never roll back a successful
-    positions-master replacement because retention cleanup failed.
+    The candidate is fetched again immediately before mutation. Any missing,
+    changed, unmarked, or malformed candidate is skipped. Expired files are
+    moved to Google Drive trash, never permanently deleted by this helper.
+    API failures raise; callers must treat cleanup as best-effort and never
+    roll back a successful positions-master replacement because cleanup failed.
     """
-    if retention_days < 1:
-        raise ValueError("retention_days muss mindestens 1 sein.")
+    if isinstance(retention_days, bool) or not isinstance(retention_days, int) or retention_days < 1:
+        raise ValueError("retention_days muss mindestens 1 sein und eine positive ganze Zahl enthalten.")
     current = _utc_now(now)
     cutoff = current - dt.timedelta(days=retention_days)
     query = (
@@ -200,7 +242,7 @@ def cleanup_expired_drive_backups(
         if not page_token:
             break
 
-    deleted: list[str] = []
+    trashed: list[str] = []
     skipped: list[str] = []
     for candidate in candidates:
         file_id = str(candidate.get("id") or "")
@@ -219,7 +261,7 @@ def cleanup_expired_drive_backups(
             skipped.append(file_id or name or "<unknown>")
             continue
 
-        # Re-read the exact candidate to avoid deleting a file that was moved,
+        # Re-read the exact candidate to avoid moving a file that was moved,
         # renamed, or had its retention marker changed after list().
         latest = drive.files().get(
             fileId=file_id,
@@ -245,13 +287,13 @@ def cleanup_expired_drive_backups(
             skipped.append(file_id)
             continue
 
-        drive.files().delete(fileId=file_id).execute(num_retries=3)
-        deleted.append(file_id)
+        if _trash_and_verify(drive, file_id):
+            trashed.append(file_id)
 
     return {
         "retention_days": retention_days,
         "cutoff_utc": cutoff.isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "deleted_ids": deleted,
+        "trashed_ids": trashed,
         "skipped_ids": skipped,
         "candidate_count": len(candidates),
     }

@@ -4699,10 +4699,10 @@ def _sync_cleaned_source_to_drive(
             )
         try:
             cleanup = cleanup_expired_drive_backups(drive, FOLDER_ID)
-            if cleanup["deleted_ids"]:
+            if cleanup["trashed_ids"]:
                 print(
-                    "DRIVE-BACKUP-RETENTION: Abgelaufene Backups gelöscht | "
-                    f"Anzahl={len(cleanup['deleted_ids'])}"
+                    "DRIVE-BACKUP-RETENTION: Abgelaufene Backups in den Papierkorb verschoben | "
+                    f"Anzahl={len(cleanup['trashed_ids'])}"
                 )
         except Exception as cleanup_error:
             # Retention cleanup must never roll back a successfully verified

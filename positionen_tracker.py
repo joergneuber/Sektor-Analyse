@@ -2192,10 +2192,10 @@ def hochladen(service, lokale_datei, folder_id, alte_file_id, expected_old_revis
             speichere_drive_quell_baseline(service, neue_file_id, lokale_datei, creds=creds)
             try:
                 cleanup = cleanup_expired_drive_backups(service, folder_id)
-                if cleanup["deleted_ids"]:
+                if cleanup["trashed_ids"]:
                     print(
-                        "DRIVE-BACKUP-RETENTION: Abgelaufene Backups gelöscht | "
-                        f"Anzahl={len(cleanup['deleted_ids'])}"
+                        "DRIVE-BACKUP-RETENTION: Abgelaufene Backups in den Papierkorb verschoben | "
+                        f"Anzahl={len(cleanup['trashed_ids'])}"
                     )
             except Exception as cleanup_error:
                 # Retention cleanup is ancillary. Never undo a verified
