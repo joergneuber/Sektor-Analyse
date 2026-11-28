@@ -2271,6 +2271,19 @@ def _prepare_closed_history_for_archive(closed_df: pd.DataFrame) -> pd.DataFrame
     if prepared.empty:
         return prepared
 
+    # Performance is a mixed input/output column: source values may be text
+    # (or empty), while validated archive values are floats. Pandas 3 infers
+    # StringDtype for all-text input and rejects assigning the computed float.
+    # Object storage preserves the original values and permits the canonical
+    # numeric result without coercing or losing comma-decimal source strings.
+    if (
+        "Performance_Seit_Einstieg%" in prepared.columns
+        and pd.api.types.is_string_dtype(prepared["Performance_Seit_Einstieg%"].dtype)
+    ):
+        prepared["Performance_Seit_Einstieg%"] = prepared[
+            "Performance_Seit_Einstieg%"
+        ].astype(object)
+
     required = {
         "Ticker", "Name", "Status", "Richtung", "Einstiegsdatum", "Einstieg",
         "Ausstiegsdatum", "Ausstiegskurs", "Performance_Seit_Einstieg%",

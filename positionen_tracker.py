@@ -677,6 +677,17 @@ def ergaenze_neue_zeilen(df):
     heute = datetime.datetime.now().strftime("%d.%m.%Y")
     alert_events = []
 
+    # Pandas 3 infers the dedicated StringDtype for columns containing only
+    # strings (for example empty TP cells from Google Sheets). TP1/TP2 later
+    # receive calculated floats, which StringArray rejects. These are mixed
+    # numeric/empty cells by contract, so use object storage before mutation.
+    for numeric_target in ("TP1", "TP2"):
+        if (
+            numeric_target in df.columns
+            and pd.api.types.is_string_dtype(df[numeric_target].dtype)
+        ):
+            df[numeric_target] = df[numeric_target].astype(object)
+
     for idx, row in df.iterrows():
         ticker = str(row['Ticker']).strip()
         if not ticker or ticker.lower() == 'nan' or ticker.upper() == ANLEITUNG_TICKER:
@@ -1656,6 +1667,19 @@ def aktualisiere_positionen(df):
     alert_events = []
 
     heute = datetime.datetime.now().strftime("%d.%m.%Y")
+
+    # These columns contain a mixture of empty/text source cells and numeric
+    # values written by the tracker. Pandas 3 may infer StringDtype for an
+    # all-text column and then reject later float assignments via .at.
+    for numeric_target in (
+        "Ausstiegskurs", "Aktueller_Kurs", "Stop", "TP1", "TP2",
+        "Performance_Seit_Einstieg%",
+    ):
+        if (
+            numeric_target in df.columns
+            and pd.api.types.is_string_dtype(df[numeric_target].dtype)
+        ):
+            df[numeric_target] = df[numeric_target].astype(object)
 
     for idx, row in df.iterrows():
         status = str(row['Status']).strip().lower()
