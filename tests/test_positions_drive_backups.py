@@ -25,7 +25,8 @@ class _Request:
 class _FakeDrive:
     def __init__(self, files):
         self.data = {item["id"]: dict(item) for item in files}
-        self.deleted = []
+        self.deleted = []  # permanent-delete calls; must remain empty
+        self.trashed = []
         self.mutate_after_list = None
 
     def files(self):
@@ -38,6 +39,8 @@ class _FakeDrive:
             def update(self, fileId, body, fields=None):
                 def update_now():
                     outer.data[fileId].update(body)
+                    if body.get("trashed") is True:
+                        outer.trashed.append(fileId)
                     return dict(outer.data[fileId])
                 return _Request(update_now)
 
@@ -108,7 +111,7 @@ def test_archive_refuses_file_outside_expected_folder():
     assert drive.deleted == []
 
 
-def test_cleanup_deletes_only_marked_backups_older_than_14_full_days():
+def test_cleanup_trashes_only_marked_backups_older_than_14_full_days():
     now = dt.datetime(2026, 11, 26, 12, 0, tzinfo=dt.timezone.utc)
     expired = _backup("expired", "2026-11-12T11:59:59Z")
     boundary = _backup("boundary", "2026-11-12T12:00:00Z")
@@ -120,8 +123,11 @@ def test_cleanup_deletes_only_marked_backups_older_than_14_full_days():
 
     result = cleanup_expired_drive_backups(drive, "folder", now=now)
 
-    assert set(drive.deleted) == {"expired", "boundary"}
-    assert set(result["deleted_ids"]) == {"expired", "boundary"}
+    assert set(drive.trashed) == {"expired", "boundary"}
+    assert drive.deleted == []
+    assert set(result["trashed_ids"]) == {"expired", "boundary"}
+    assert drive.data["expired"]["trashed"] is True
+    assert drive.data["boundary"]["trashed"] is True
     assert drive.data["fresh"]["trashed"] is False
     assert drive.data["unmarked"]["trashed"] is False
     assert drive.data["wrong-folder"]["trashed"] is False
@@ -271,7 +277,7 @@ def test_scheduled_cleanup_entrypoint_uses_fixed_retention_policy(monkeypatch):
     calls = []
     expected = {
         "retention_days": 14,
-        "deleted_ids": ["old-backup"],
+        "trashed_ids": ["old-backup"],
         "skipped_ids": [],
         "candidate_count": 1,
         "cutoff_utc": "2026-11-12T12:00:00Z",
@@ -563,3 +569,69 @@ def test_archive_accepts_timestamp_only_difference_with_matching_version():
     }
     result = archive_drive_backup(drive, "master-1", "folder", expected_revision=expected)
     assert result["name"].startswith("Offene_Positionen.__BACKUP_")
+
+
+
+def test_cleanup_reconciles_lost_trash_update_response():
+    class _LostResponseDrive(_FakeDrive):
+        def files(self):
+            outer = self
+            class Files:
+                def list(self, **kwargs):
+                    return _Request(lambda: {"files": [dict(x) for x in outer.data.values()]})
+                def get(self, fileId, fields=None):
+                    return _Request(lambda: dict(outer.data[fileId]))
+                def update(self, fileId, body, fields=None):
+                    def apply_then_timeout():
+                        outer.data[fileId].update(body)
+                        outer.trashed.append(fileId)
+                        raise TimeoutError("response lost after remote mutation")
+                    return _Request(apply_then_timeout)
+            return Files()
+
+    now = dt.datetime(2026, 11, 26, 12, 0, tzinfo=dt.timezone.utc)
+    drive = _LostResponseDrive([_backup("expired", "2026-10-01T00:00:00Z")])
+    result = cleanup_expired_drive_backups(drive, "folder", now=now)
+    assert result["trashed_ids"] == ["expired"]
+    assert drive.data["expired"]["trashed"] is True
+    assert drive.deleted == []
+
+
+def test_cleanup_fails_closed_when_trash_state_cannot_be_verified():
+    class _UnconfirmedDrive(_FakeDrive):
+        def files(self):
+            outer = self
+            class Files:
+                def list(self, **kwargs):
+                    return _Request(lambda: {"files": [dict(x) for x in outer.data.values()]})
+                def get(self, fileId, fields=None):
+                    return _Request(lambda: dict(outer.data[fileId]))
+                def update(self, fileId, body, fields=None):
+                    def no_op():
+                        return {"id": fileId, "trashed": False}
+                    return _Request(no_op)
+            return Files()
+
+    now = dt.datetime(2026, 11, 26, 12, 0, tzinfo=dt.timezone.utc)
+    drive = _UnconfirmedDrive([_backup("expired", "2026-10-01T00:00:00Z")])
+    with pytest.raises(RuntimeError, match="Papierkorb verschoben"):
+        cleanup_expired_drive_backups(drive, "folder", now=now)
+    assert drive.data["expired"]["trashed"] is False
+    assert drive.deleted == []
+
+
+def test_cleanup_never_calls_permanent_delete_endpoint():
+    now = dt.datetime(2026, 11, 26, 12, 0, tzinfo=dt.timezone.utc)
+    drive = _FakeDrive([_backup("expired", "2026-10-01T00:00:00Z")])
+    result = cleanup_expired_drive_backups(drive, "folder", now=now)
+    assert result["trashed_ids"] == ["expired"]
+    assert drive.deleted == []
+    assert drive.trashed == ["expired"]
+
+
+def test_cleanup_rejects_non_integer_retention_days():
+    drive = _FakeDrive([])
+    with pytest.raises(ValueError, match="positive ganze Zahl"):
+        cleanup_expired_drive_backups(drive, "folder", retention_days=1.5)
+    with pytest.raises(ValueError, match="positive ganze Zahl"):
+        cleanup_expired_drive_backups(drive, "folder", retention_days=True)
