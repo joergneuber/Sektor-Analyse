@@ -2,7 +2,7 @@ name: Positions Drive Backup Cleanup
 
 on:
   schedule:
-    # Daily UTC; expired backups are removed at the first successful run after day 14.
+    # Daily UTC; backups older than 14 full days are moved to Google Drive trash.
     - cron: '47 23 * * *'
   workflow_dispatch:
 
@@ -33,7 +33,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install google-auth google-api-python-client
 
-      - name: Abgelaufene Positionsmaster-Backups bereinigen
+      - name: Abgelaufene Positionsmaster-Backups in Papierkorb verschieben
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
         run: PYTHONPATH=. python scripts/cleanup_positions_drive_backups.py
+
+      - name: Bereinigungsbericht als Artefakt speichern
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: positions-drive-backup-cleanup-report-${{ github.run_id }}
+          path: positions_drive_backup_cleanup_report.json
+          if-no-files-found: warn
+          retention-days: 30
