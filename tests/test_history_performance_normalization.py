@@ -720,6 +720,10 @@ def test_closed_trade_without_live_price_or_stored_performance_is_archived_from_
     assert opc.canonical_closed_performance_points(row) == 16.67
 
     closed = pd.DataFrame([row], columns=opc.HISTORY_HEADERS)
+    # Simuliert die Pandas-3-StringDtype-Inferenz für leere/textuelle Sheet-Zellen.
+    closed["Performance_Seit_Einstieg%"] = closed[
+        "Performance_Seit_Einstieg%"
+    ].astype("string")
     prepared = opc._prepare_closed_history_for_archive(closed)
     assert prepared.iloc[0]["Performance_Seit_Einstieg%"] == 16.67
     assert prepared.iloc[0]["Aktueller_Kurs"] == ""

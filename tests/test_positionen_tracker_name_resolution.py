@@ -121,6 +121,7 @@ def test_sold_position_performance_uses_manual_exit_without_current_quote():
 
     namespace = {
         "datetime": datetime,
+        "pd": pd,
         "sicheres_float": safe_float,
         "ermittle_richtung": lambda row, stop, entry: str(row.get("Richtung", "")).strip().lower() == "short",
         "hole_aktuellen_kurs": forbidden_quote,
@@ -138,6 +139,8 @@ def test_sold_position_performance_uses_manual_exit_without_current_quote():
         "Ausstiegskurs": 88.38,
         "Performance_Seit_Einstieg%": "",
     }])
+    # Reproduziert Pandas-3-StringDtype aus all-text Google-Sheets-Spalten.
+    frame["Performance_Seit_Einstieg%"] = frame["Performance_Seit_Einstieg%"].astype("string")
 
     result, alerts = namespace["aktualisiere_positionen"](frame)
 
@@ -203,6 +206,9 @@ def test_new_1ant_f_position_uses_alias_without_yahoo_lookup():
         "Einstiegsdatum": "",
         "Produkt_Typ": "",
     }])
+    # TP-Zellen aus Google Sheets können in Pandas 3 als StringDtype vorliegen.
+    frame["TP1"] = frame["TP1"].astype("string")
+    frame["TP2"] = frame["TP2"].astype("string")
 
     result = namespace["ergaenze_neue_zeilen"](frame)
 
