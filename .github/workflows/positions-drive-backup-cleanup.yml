@@ -36,4 +36,4 @@ jobs:
       - name: Abgelaufene Positionsmaster-Backups bereinigen
         env:
           GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
-        run: python scripts/cleanup_positions_drive_backups.py
+        run: PYTHONPATH=. python scripts/cleanup_positions_drive_backups.py
